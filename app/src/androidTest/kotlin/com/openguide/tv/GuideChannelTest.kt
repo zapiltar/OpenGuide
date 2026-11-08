@@ -56,7 +56,7 @@ class GuideChannelTest {
         val ctx = instr.targetContext
         val prefs = ctx.getSharedPreferences("openguide", 0)
         prefs.edit().remove("last_channel").putBoolean("hide_dead", false)
-            .putBoolean("crt_mode", true).putBoolean("guide_channel", guideChannel).putBoolean("channel_static", static).commit()
+            .putBoolean("crt_mode", true).putBoolean("guide_channel", guideChannel).putBoolean("channel_static", static).remove("static_sound").commit()
         start()
     }
 
@@ -121,12 +121,21 @@ class GuideChannelTest {
         press(KeyEvent.KEYCODE_CHANNEL_UP)
         assertFalse(guideShown)
         assertTrue("Static covers the change", staticShown)
+        val sound = onMain { field<com.openguide.tv.ui.StaticView>("staticView").soundPlaying }
+        android.util.Log.i("GuideChannelTest", "Static sound playing: $sound")
+        if (sound != null) assertTrue("The hiss plays with the snow", sound)
         screenshot("static")
+        SystemClock.sleep(120)
+        screenshot("static2")
         val real = onMain { player().channel }!!
         assertTrue(real.id != GUIDE_CHANNEL_ID)
         waitFor("the static to clear", 8_000) { !staticShown }
+        SystemClock.sleep(400) // the fade
+        val after = onMain { field<com.openguide.tv.ui.StaticView>("staticView").soundPlaying }
+        if (after != null) assertFalse("The hiss stops with the snow", after)
 
         press(KeyEvent.KEYCODE_CHANNEL_DOWN)
+        screenshot("static3")
         assertEquals(GUIDE_CHANNEL_ID, onMain { player().channel?.id })
         assertTrue(guideShown)
     }

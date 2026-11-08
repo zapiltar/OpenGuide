@@ -91,6 +91,9 @@ class Prefs(ctx: Context) {
     var channelStatic: Boolean
         get() = p.getBoolean("channel_static", true)
         set(v) = p.edit().putBoolean("channel_static", v).apply()
+    var staticSound: Boolean
+        get() = p.getBoolean("static_sound", true)
+        set(v) = p.edit().putBoolean("static_sound", v).apply()
 
     /** A channel uses the default picture mode until it's given its own. */
     fun channelStretch(channel: String): CrtStretch =

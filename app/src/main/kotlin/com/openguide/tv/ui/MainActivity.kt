@@ -905,7 +905,7 @@ class MainActivity : Activity() {
         val cur = p.channel
         if (cur != null && cur != ch) previousChannel = cur
         subtitles.setCues(emptyList())
-        if (Look.crt && prefs.channelStatic && screen == Screen.FULLSCREEN) staticView.start()
+        if (Look.crt && prefs.channelStatic && screen == Screen.FULLSCREEN) staticView.start(prefs.staticSound)
         p.tune(ch, stream)
         // Nothing to wait for, so this is just the burst.
         if (ch.id == GUIDE_CHANNEL_ID) staticView.finish()

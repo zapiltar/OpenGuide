@@ -98,8 +98,9 @@ list you're watching from, so from the CRT list it shows just that list. Turn it
 **Settings > Guide channel**.
 
 **Static** fills the screen for a moment when you change channel in CRT mode, and stays until the new
-channel's picture is ready, for up to five seconds. Turn it off with **Settings > Static when changing
-channel**.
+channel's picture is ready, for up to five seconds, with a hiss to go with it. Each burst looks a little
+different: the grain, brightness, roll and dark hum bar vary. Turn it off with **Settings > Static when
+changing channel**, or keep the picture and silence it with **Settings > Static sound**.
 
 ## Subtitles
 

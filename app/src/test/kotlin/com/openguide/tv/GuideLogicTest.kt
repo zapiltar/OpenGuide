@@ -161,6 +161,35 @@ class GuideLogicTest {
         assertEquals(1440 to 1080, crtVideoSize(1920, 1080, 16f / 9f, 4f / 3f, CrtStretch.FIT))
     }
 
+    @Test fun staticHissIsLoudVariedAndLoopsCleanly() {
+        val rate = 22_050
+        val pcm = com.openguide.tv.ui.staticHiss(rate, 2f, seed = 7)
+        assertTrue("About two seconds, less the crossfade", pcm.size in rate * 18 / 10..rate * 2)
+        val peak = pcm.maxOf { kotlin.math.abs(it.toInt()) }
+        assertTrue("Loud enough to hear, short of clipping: $peak", peak in 20_000..Short.MAX_VALUE)
+        // Noise, not a tone: neighbouring samples barely predict each other.
+        val mean = pcm.sumOf { it.toLong() }.toDouble() / pcm.size
+        assertTrue("No DC offset: $mean", kotlin.math.abs(mean) < 600)
+        // The loop seam is no bigger a jump than ordinary sample-to-sample movement.
+        val jumps = (1 until pcm.size).map { kotlin.math.abs(pcm[it] - pcm[it - 1]) }.sorted()
+        val seam = kotlin.math.abs(pcm.first() - pcm.last())
+        assertTrue("Seam $seam", seam <= jumps[jumps.size * 99 / 100])
+        assertFalse("A different seed sounds different", pcm.contentEquals(com.openguide.tv.ui.staticHiss(rate, 2f, seed = 8)))
+
+        // Saved for listening to, since the emulator has no speakers.
+        val out = java.io.File("build/static-hiss.wav")
+        java.io.DataOutputStream(out.outputStream().buffered()).use { w ->
+            fun le32(v: Int) = w.writeInt(Integer.reverseBytes(v))
+            fun le16(v: Int) = w.writeShort(java.lang.Short.reverseBytes(v.toShort()).toInt())
+            val data = pcm.size * 2
+            w.writeBytes("RIFF"); le32(36 + data); w.writeBytes("WAVEfmt ")
+            le32(16); le16(1); le16(1); le32(rate); le32(rate * 2); le16(2); le16(16)
+            w.writeBytes("data"); le32(data)
+            // Three passes of the loop, so the seam can be heard if there is one.
+            repeat(3) { pcm.forEach { le16(it.toInt()) } }
+        }
+    }
+
     @Test fun guideChannelListsWhatsOnInOrder() {
         fun ch(id: String) = Channel(id, id.uppercase(), "US", emptyList(), null, emptyList(), emptyList())
         fun show(title: String, start: Long = 0L) = Programme(start, start + 1, title, null, null, null, null)

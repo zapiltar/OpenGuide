@@ -496,7 +496,11 @@ class SettingsScreen(
         prefs.channelStatic = !prefs.channelStatic
         refresh()
     }
-    private val crtRows = listOf(crtStretch, crtSignal, crtOverscan, crtOverscanVideo, crtGuideChannel, crtStatic)
+    private val crtStaticSound = row {
+        prefs.staticSound = !prefs.staticSound
+        refresh()
+    }
+    private val crtRows = listOf(crtStretch, crtSignal, crtOverscan, crtOverscanVideo, crtGuideChannel, crtStatic, crtStaticSound)
 
     private val stats = ctx.label(size = 13.5f, color = Palette.MUTED, lines = 8)
     private val credits = ctx.label(
@@ -514,7 +518,7 @@ class SettingsScreen(
         orientation = VERTICAL
         val col = LinearLayout(ctx).apply { orientation = VERTICAL }
         val width = if (Look.crt) MATCH else ctx.dp(620)
-        listOf(region, language, onlyListed, hideDead, dpadSurf, crtMode, crtStretch, crtSignal, crtOverscan, crtOverscanVideo, crtGuideChannel, crtStatic, refreshNow, update).forEach {
+        listOf(region, language, onlyListed, hideDead, dpadSurf, crtMode, crtStretch, crtSignal, crtOverscan, crtOverscanVideo, crtGuideChannel, crtStatic, crtStaticSound, refreshNow, update).forEach {
             col.addView(it, LayoutParams(width, ctx.dp(40)).apply { bottomMargin = ctx.dp(4) })
         }
         col.addView(stats, LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(14); bottomMargin = ctx.dp(14) })
@@ -542,6 +546,7 @@ class SettingsScreen(
         crtOverscanVideo.text = "Keep video inside overscan: " + onOff(prefs.crtOverscanVideo)
         crtGuideChannel.text = "Guide channel (channel 0): " + onOff(prefs.guideChannel)
         crtStatic.text = "Static when changing channel: " + onOff(prefs.channelStatic)
+        crtStaticSound.text = "Static sound: " + onOff(prefs.staticSound)
         crtRows.forEach { it.visibility = if (prefs.crtMode) VISIBLE else GONE }
         if (update.text.isNullOrEmpty()) setUpdateText(null)
     }
