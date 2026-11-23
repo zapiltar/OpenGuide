@@ -3,7 +3,7 @@
 A cable-style TV guide and channel browser for Fire TV and Android TV / Google TV, including Onn sticks. Channels and
 streams come from [iptv-org](https://github.com/iptv-org/iptv).
 
-Download the latest `OpenGuide.apk` from the [releases page](https://github.com/Zapiltar-E7/OpenGuide/releases/latest).
+Download the latest `OpenGuide.apk` from the [releases page](https://github.com/zapiltar/OpenGuide/releases/latest).
 Once it's installed, **Settings > Check for updates** fetches and installs new versions.
 
 ## Install on a Fire TV stick
