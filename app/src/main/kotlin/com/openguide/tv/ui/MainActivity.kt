@@ -31,7 +31,14 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import com.openguide.tv.OpenGuideApp
+import com.openguide.tv.data.BAR_CHANNEL_ID
+import com.openguide.tv.data.BarFeed
+import com.openguide.tv.data.BarMode
 import com.openguide.tv.data.Block
+import com.openguide.tv.data.PairStatus
+import com.openguide.tv.data.barChannel
+import com.openguide.tv.data.dueAppearance
+import com.openguide.tv.data.isVirtualChannel
 import com.openguide.tv.data.CATEGORY_ALL
 import com.openguide.tv.data.CATEGORY_CRT
 import com.openguide.tv.data.CATEGORY_FAVORITES
@@ -52,6 +59,7 @@ import com.openguide.tv.data.crtVideoSize
 import com.openguide.tv.data.guideRows
 import com.openguide.tv.data.uncroppedSize
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
@@ -79,6 +87,8 @@ class MainActivity : Activity() {
     private val logos by lazy { Logos(this, repo.http) }
     private val listings by lazy { Listings(repo, scope) { onListingsLoaded() } }
     private val updater by lazy { Updater(this, repo.http) }
+    private val bar: BarMode by lazy { (application as OpenGuideApp).bar }
+    private val barImages by lazy { BarImages(this, repo.http) }
     private val prefs get() = repo.prefs
 
     private lateinit var root: FrameLayout
@@ -94,6 +104,12 @@ class MainActivity : Activity() {
     private lateinit var breakLabel: TextView
     private lateinit var guideChannelView: GuideChannelView
     private lateinit var staticView: StaticView
+    private lateinit var barChannelView: BarChannelView
+    private lateinit var specialOverlay: SpecialOverlay
+    private lateinit var barLink: BarLinkPanel
+    private var brandLabel: TextView? = null
+    private var brandLogo: ImageView? = null
+    private lateinit var loadingTitle: TextView
     private lateinit var subtitles: SubtitleView
     private lateinit var hero: LinearLayout
     private lateinit var guide: GuideView
@@ -142,6 +158,14 @@ class MainActivity : Activity() {
     private var updateBusy = false
     /** An update waiting for permission to install apps, which is granted on another screen. */
     private var pendingApk: File? = null
+    /** Special appearances already shown or dismissed, so each shows once. */
+    private val shownSpecials = HashSet<String>()
+    private var linkJob: Job? = null
+
+    private val endSpecial = Runnable {
+        specialOverlay.hide()
+        checkSpecials()
+    }
 
     private val hideBanner = Runnable {
         banner.visibility = View.GONE
@@ -186,7 +210,7 @@ class MainActivity : Activity() {
         root.addView(shell, FrameLayout.LayoutParams(MATCH, MATCH))
         guideScreen = buildGuideScreen()
         browser = BrowserScreen(this, repo, logos, ::tuneFullscreen, ::toggleFavorite, ::showChannelOptions, ::pickRegion, ::pickLanguage)
-        settings = SettingsScreen(this, repo, settingsActions)
+        settings = SettingsScreen(this, repo, bar, settingsActions)
         listOf(guideScreen, browser, settings).forEach {
             it.visibility = View.GONE
             content.addView(it, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -218,6 +242,8 @@ class MainActivity : Activity() {
 
         guideChannelView = GuideChannelView(this)
         root.addView(guideChannelView, FrameLayout.LayoutParams(MATCH, MATCH))
+        barChannelView = BarChannelView(this, barImages, bar::now)
+        root.addView(barChannelView, FrameLayout.LayoutParams(MATCH, MATCH))
         // Fills the whole tube, as snow does, so it stays out of the overscan margins below.
         staticView = StaticView(this)
         root.addView(staticView, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -253,6 +279,10 @@ class MainActivity : Activity() {
         }
         root.addView(breakLabel, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END))
 
+        // Above the channel banner and the picture, below the menus the remote is using.
+        specialOverlay = SpecialOverlay(this, barImages)
+        root.addView(specialOverlay, FrameLayout.LayoutParams(MATCH, MATCH))
+
         loadingView = buildLoading()
         root.addView(loadingView, FrameLayout.LayoutParams(MATCH, MATCH))
 
@@ -264,6 +294,9 @@ class MainActivity : Activity() {
 
         calibrator = OverscanOverlay(this)
         root.addView(calibrator, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        barLink = BarLinkPanel(this)
+        root.addView(barLink, FrameLayout.LayoutParams(MATCH, MATCH))
         applyOverscan()
     }
 
@@ -285,6 +318,7 @@ class MainActivity : Activity() {
             calibrator.show(prefs.crtOverscanX, prefs.crtOverscanY)
         }
         override fun checkForUpdate() = this@MainActivity.checkForUpdate()
+        override fun barMode() = openBarMode()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -314,7 +348,7 @@ class MainActivity : Activity() {
     /** Keeps everything but full-screen video inside the part of the picture the tube shows. */
     private fun applyOverscan() {
         // Not the picker: it's centred anyway, and its dimming should reach the screen's edges.
-        listOf<View>(shell, banner, loadingView, cropper, crtNumber, breakLabel, subtitles, guideChannelView).forEach { v ->
+        listOf<View>(shell, banner, loadingView, cropper, crtNumber, breakLabel, subtitles, guideChannelView, barChannelView, specialOverlay, barLink).forEach { v ->
             v.layoutParams = (v.layoutParams as FrameLayout.LayoutParams).apply {
                 setMargins(insetX, insetY, insetX, insetY)
             }
@@ -406,7 +440,13 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        if (!Look.crt) bar.addView(label("OpenGuide", 16f, Palette.ACCENT, bold = true), LinearLayout.LayoutParams(WRAP, MATCH).apply { rightMargin = dp(14) })
+        if (!Look.crt) {
+            // A linked bar's own logo and name replace OpenGuide's.
+            brandLogo = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER; visibility = View.GONE }
+            bar.addView(brandLogo, LinearLayout.LayoutParams(dp(40), MATCH).apply { rightMargin = dp(8) })
+            brandLabel = label(brandName(), 16f, Palette.ACCENT, bold = true)
+            bar.addView(brandLabel, LinearLayout.LayoutParams(WRAP, MATCH).apply { rightMargin = dp(14) })
+        }
         tabGuide = focusButton("Guide") { showGuide(focus = true) }.apply { id = View.generateViewId() }
         guide.nextFocusUpId = tabGuide.id
         tabBrowser = focusButton("Channels") { showBrowser(focus = true) }
@@ -476,7 +516,8 @@ class MainActivity : Activity() {
         orientation = LinearLayout.VERTICAL
         gravity = Gravity.CENTER
         setBackgroundColor(Palette.BG)
-        addView(label("OpenGuide", 40f, Palette.ACCENT, bold = true).apply { gravity = Gravity.CENTER })
+        loadingTitle = label(brandName(), 40f, Palette.ACCENT, bold = true).apply { gravity = Gravity.CENTER }
+        addView(loadingTitle)
         loadingText = label(size = 16f, color = Palette.MUTED, lines = 4).apply { gravity = Gravity.CENTER }
         addView(loadingText, LinearLayout.LayoutParams(dp(640), WRAP).apply { topMargin = dp(16) })
         retryButton = focusButton("Try again", 16f) { startLoading() }.apply {
@@ -537,6 +578,15 @@ class MainActivity : Activity() {
             }
         }
         scope.launch { repo.epgVersion.collect { onListingsChanged() } }
+        bar.start()
+        scope.launch { bar.feed.collect(::onBarFeed) }
+        scope.launch {
+            // Specials are timed to the second, so they're checked more often than the clock.
+            while (true) {
+                delay(5_000)
+                checkSpecials()
+            }
+        }
         scope.launch {
             repo.epgStatus.collect {
                 updateStatusText()
@@ -569,6 +619,7 @@ class MainActivity : Activity() {
         repo.checkSources(force = false)
         if (screen == Screen.BROWSER) refreshBrowserAiring()
         refreshGuideChannel()
+        barChannelView.draw()
     }
 
     private fun onListingsChanged() {
@@ -613,13 +664,19 @@ class MainActivity : Activity() {
     private fun guideList(): List<Channel> {
         val list = repo.filtered(guideCategory)
         val withGuide = guideCategory == CATEGORY_ALL || (guideCategory == CATEGORY_CRT && list.isNotEmpty())
-        return if (Look.crt && prefs.guideChannel && withGuide) listOf(GUIDE_CHANNEL) + list else list
+        val withGuideChannel = if (Look.crt && prefs.guideChannel && withGuide) listOf(GUIDE_CHANNEL) + list else list
+        val feed = bar.feed.value
+        return if (feed != null && guideCategory == CATEGORY_ALL) listOf(barChannel(feed)) + withGuideChannel else withGuideChannel
     }
 
     /** What was last on, which [Repo.channel] can't find if it was the guide channel. */
     private fun savedChannel(): Channel? {
         val id = prefs.lastChannel
-        return if (id == GUIDE_CHANNEL_ID) GUIDE_CHANNEL.takeIf { Look.crt && prefs.guideChannel } else repo.channel(id)
+        return when (id) {
+            GUIDE_CHANNEL_ID -> GUIDE_CHANNEL.takeIf { Look.crt && prefs.guideChannel }
+            BAR_CHANNEL_ID -> bar.feed.value?.let(::barChannel)
+            else -> repo.channel(id)
+        }
     }
 
     private fun reloadGuide() {
@@ -649,6 +706,13 @@ class MainActivity : Activity() {
             return
         }
         heroChannel.text = "${repo.numbers[ch.id] ?: ""}  ${ch.name}"
+        if (ch.id == BAR_CHANNEL_ID) {
+            heroTitle.text = ch.name
+            heroTime.text = "Menus, events and specials"
+            heroDesc.text = "Press OK to watch."
+            heroProgress.visibility = View.INVISIBLE
+            return
+        }
         if (ch.id == GUIDE_CHANNEL_ID) {
             heroTitle.text = ch.name
             heroTime.text = "What's on now and next, scrolling"
@@ -701,6 +765,13 @@ class MainActivity : Activity() {
         if (target != Screen.FULLSCREEN) staticView.cancel()
         updateGuideChannel()
         placeVideo()
+        // Settings is where staff fix things, so specials wait until they leave it.
+        if (target == Screen.SETTINGS && specialOverlay.isShowing) {
+            specialOverlay.removeCallbacks(endSpecial)
+            specialOverlay.hide()
+        } else {
+            checkSpecials()
+        }
     }
 
     private fun placeVideo() {
@@ -908,7 +979,7 @@ class MainActivity : Activity() {
         if (Look.crt && prefs.channelStatic && screen == Screen.FULLSCREEN) staticView.start(prefs.staticSound)
         p.tune(ch, stream)
         // Nothing to wait for, so this is just the burst.
-        if (ch.id == GUIDE_CHANNEL_ID) staticView.finish()
+        if (isVirtualChannel(ch.id)) staticView.finish()
         updateGuideChannel()
         guide.tunedChannelId = ch.id
         updateStatusText()
@@ -928,11 +999,12 @@ class MainActivity : Activity() {
         val on = screen == Screen.FULLSCREEN && player?.channel?.id == GUIDE_CHANNEL_ID
         guideChannelView.visibility = if (on) View.VISIBLE else View.GONE
         if (on) refreshGuideChannel()
+        barChannelView.visibility = if (screen == Screen.FULLSCREEN && player?.channel?.id == BAR_CHANNEL_ID) View.VISIBLE else View.GONE
     }
 
     private fun refreshGuideChannel() {
         if (guideChannelView.visibility != View.VISIBLE) return
-        val channels = surfList.ifEmpty { guideList() }.filter { it.id != GUIDE_CHANNEL_ID }
+        val channels = surfList.ifEmpty { guideList() }.filter { !isVirtualChannel(it.id) }
         scope.launch {
             val rows = withContext(Dispatchers.IO) {
                 val now = System.currentTimeMillis()
@@ -1044,7 +1116,7 @@ class MainActivity : Activity() {
     }
 
     private fun toggleFavorite(ch: Channel) {
-        if (ch.id == GUIDE_CHANNEL_ID) return
+        if (isVirtualChannel(ch.id)) return
         val added = repo.toggleFavorite(ch.id)
         Toast.makeText(this, if (added) "Added ${ch.name} to favorites" else "Removed ${ch.name} from favorites", Toast.LENGTH_SHORT).show()
         if (guideCategory == CATEGORY_FAVORITES) reloadGuide() else guide.refreshFocus()
@@ -1060,7 +1132,7 @@ class MainActivity : Activity() {
 
     /** Everything a remote with only a D-pad, OK and Back can't reach through a dedicated button. */
     private fun showChannelOptions(ch: Channel, list: List<Channel>) {
-        if (ch.id == GUIDE_CHANNEL_ID) {
+        if (isVirtualChannel(ch.id)) {
             tuneFullscreen(ch, list) // it can't be previewed or added to a list, so there's nothing to choose
             return
         }
@@ -1093,7 +1165,7 @@ class MainActivity : Activity() {
     private fun showPlayerOptions() {
         val ch = player?.channel ?: return
         val previous = previousChannel
-        if (ch.id == GUIDE_CHANNEL_ID) {
+        if (isVirtualChannel(ch.id)) {
             // No stream, so no picture or source settings, and it's on every list it can be on.
             if (previous != null) {
                 val items = listOf(PickerItem("prev", "Last channel: ${previous.name}"))
@@ -1158,6 +1230,10 @@ class MainActivity : Activity() {
             swallowKeyUp = null
             return true
         }
+        if (barLink.isShowing) {
+            handleLinkKey(event)
+            return true
+        }
         if (calibrator.isShowing) {
             handleCalibrationKey(event)
             return true
@@ -1176,6 +1252,7 @@ class MainActivity : Activity() {
             }
             return super.dispatchKeyEvent(event)
         }
+        if (specialOverlay.isShowing && handleSpecialKey(event)) return true
         if (screen == Screen.FULLSCREEN && handleFullscreenKey(event)) return true
         if (code == KeyEvent.KEYCODE_BACK) {
             if (event.action == KeyEvent.ACTION_UP) handleBack()
@@ -1330,6 +1407,151 @@ class MainActivity : Activity() {
         super.onDestroy()
         scope.cancel()
     }
+
+    // ---- Bar Mode ----
+
+    private fun brandName(): String = bar.feed.value?.venue?.name ?: "OpenGuide"
+
+    private fun onBarFeed(feed: BarFeed?) {
+        brandLabel?.text = brandName()
+        brandLogo?.let { barImages.load(it, feed?.venue?.logo) }
+        loadingTitle.text = brandName()
+        barChannelView.setFeed(feed)
+        if (!uiReady) return
+        reloadGuide()
+        settings.refresh()
+        if (feed == null) {
+            // Unlinked: nothing of the bar's should stay on screen.
+            if (specialOverlay.isShowing) endSpecial.run()
+            if (player?.channel?.id == BAR_CHANNEL_ID) {
+                player?.stop()
+                if (screen == Screen.FULLSCREEN) showGuide(focus = true)
+            }
+            updateGuideChannel()
+        }
+        checkSpecials()
+    }
+
+    /** Puts up any special that's due, and takes down one whose time is up. */
+    private fun checkSpecials() {
+        if (!uiReady) return
+        val feed = bar.feed.value
+        val now = bar.now()
+        val current = specialOverlay.appearance
+        if (current != null) {
+            if (now >= current.until || feed == null) endSpecial.run()
+            return
+        }
+        if (feed == null || screen == Screen.SETTINGS || screen == Screen.LOADING) return
+        if (picker.isShowing || calibrator.isShowing || cropper.isShowing || barLink.isShowing) return
+        val due = dueAppearance(feed.specials, now, shownSpecials) ?: return
+        shownSpecials += due.key
+        specialOverlay.show(due, feed.venue.name)
+        specialOverlay.removeCallbacks(endSpecial)
+        specialOverlay.postDelayed(endSpecial, (due.until - now).coerceAtLeast(1_000))
+    }
+
+    /**
+     * Back dismisses a special. A takeover covers the picture, so it also takes every other key: changing
+     * channel or opening menus behind it would leave staff working blind. OK dismisses a takeover too.
+     */
+    private fun handleSpecialKey(event: KeyEvent): Boolean {
+        val code = event.keyCode
+        val dismiss = code == KeyEvent.KEYCODE_BACK || (specialOverlay.isTakeover &&
+            code in listOf(KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_MENU))
+        if (dismiss) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                swallowKeyUp = code
+                specialOverlay.removeCallbacks(endSpecial)
+                specialOverlay.hide()
+            }
+            return true
+        }
+        return specialOverlay.isTakeover
+    }
+
+    private fun openBarMode() {
+        if (!bar.linked) {
+            startLinking()
+            return
+        }
+        val feed = bar.feed.value
+        val items = listOf(
+            PickerItem("refresh", "Check for changes now"),
+            PickerItem("unlink", "Unlink this TV"),
+        )
+        val title = feed?.venue?.name?.let { "Linked to $it" } ?: "Linked to a bar"
+        picker.show(title, items, null) { item ->
+            when (item.id) {
+                "refresh" -> {
+                    bar.refreshNow()
+                    Toast.makeText(this, "Checking for changes", Toast.LENGTH_SHORT).show()
+                }
+                "unlink" -> {
+                    val confirm = listOf(PickerItem("yes", "Unlink"), PickerItem("no", "Keep it linked"))
+                    picker.show("Unlink from ${feed?.venue?.name ?: "this bar"}?", confirm, null, focus = "no") {
+                        if (it.id == "yes") {
+                            bar.unlink()
+                            shownSpecials.clear()
+                            Toast.makeText(this, "This TV is back to plain OpenGuide", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** Shows a code, waits for staff to enter it on the bar's site, and gets a new code if it runs out. */
+    private fun startLinking() {
+        linkJob?.cancel()
+        barLink.showMessage("Getting a code…")
+        linkJob = scope.launch {
+            try {
+                while (true) {
+                    val pairing = bar.startPairing()
+                    barLink.showCode(pairing.code, bar.adminAddress)
+                    var status: PairStatus = PairStatus.Waiting
+                    while (status == PairStatus.Waiting) {
+                        delay(pairing.pollSeconds * 1000L)
+                        status = try {
+                            bar.checkPairing(pairing)
+                        } catch (e: IOException) {
+                            PairStatus.Waiting // a dropped request: keep showing the code and try again
+                        }
+                    }
+                    if (status is PairStatus.Linked) {
+                        barLink.hide()
+                        Toast.makeText(this@MainActivity, "Linked to ${status.venueName} as “${status.screenName}”", Toast.LENGTH_LONG).show()
+                        settings.refresh()
+                        return@launch
+                    }
+                    // The code ran out before anyone typed it in: show a fresh one.
+                }
+            } catch (e: IOException) {
+                android.util.Log.w("BarMode", "Linking failed", e)
+                barLink.showMessage("Couldn't reach the bar server. Check this TV's internet connection.", error = true)
+            } catch (e: org.json.JSONException) {
+                barLink.showMessage("The bar server sent something unexpected. Try again later.", error = true)
+            }
+        }
+    }
+
+    private fun handleLinkKey(event: KeyEvent) {
+        if (event.action != KeyEvent.ACTION_DOWN) return
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_BACK -> {
+                swallowKeyUp = event.keyCode
+                linkJob?.cancel()
+                barLink.hide()
+                settings.refresh()
+            }
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> if (linkJob?.isActive != true) {
+                swallowKeyUp = event.keyCode
+                startLinking()
+            }
+        }
+    }
+
 
     private companion object {
         const val KEY_SETTINGS = "settings"

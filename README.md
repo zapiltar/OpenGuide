@@ -147,9 +147,24 @@ Requires JDK 21 and the Android SDK (platform 36). Put `sdk.dir` in `local.prope
 With a device or emulator connected, `./gradlew connectedDebugAndroidTest` runs the on-device tests.
 They need internet access, and they uninstall the app when they finish.
 
-Release builds are signed with the local debug key (`~/.android/debug.keystore`) so they can be
-sideloaded. **Back that file up.** Android only installs an update signed with the same key, so without
-it every install would have to be removed and set up again.
+Release builds are signed with the release key named in `keystore.properties`, next to
+`settings.gradle.kts`:
+
+```
+storeFile=C:/path/to/openguide-release.jks
+storePassword=...
+keyAlias=openguide
+keyPassword=...
+```
+
+Git ignores that file, so the key and its passwords never reach the repository. **Back up both the
+`.jks` and the passwords.** Android only installs an update signed with the same key, so without them
+every install would have to be removed and set up again. Without `keystore.properties`, release builds
+use the local debug key, which is only good for testing.
+
+Bar Mode, which lets a bar show its menus, events and specials on its TVs, is only in builds that name
+its server: add `-PbarApi=https://your-worker.example` to the build command. The server and its admin
+site are in [`server/`](server/README.md).
 
 ## Releasing
 

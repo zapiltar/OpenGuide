@@ -23,6 +23,7 @@ import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.openguide.tv.BuildConfig
+import com.openguide.tv.data.BarMode
 import com.openguide.tv.data.CATEGORY_ALL
 import com.openguide.tv.data.CATEGORY_CRT
 import com.openguide.tv.data.CATEGORY_FAVORITES
@@ -438,12 +439,14 @@ interface SettingsActions {
     fun crtPictureChanged()
     fun calibrateOverscan()
     fun checkForUpdate()
+    fun barMode()
 }
 
 /** Region, display options, refresh, and where the data comes from. Scrolls, as it outgrew a TV screen. */
 class SettingsScreen(
     ctx: Context,
     private val repo: Repo,
+    private val bar: BarMode,
     private val actions: SettingsActions,
 ) : LinearLayout(ctx) {
     private val prefs get() = repo.prefs
@@ -467,6 +470,7 @@ class SettingsScreen(
     }
     private val refreshNow = row { repo.refreshAll() }.apply { text = "Refresh channels and listings now" }
     private val update = row { actions.checkForUpdate() }
+    private val barRow = row { actions.barMode() }
 
     private val crtMode = row {
         prefs.crtMode = !prefs.crtMode
@@ -518,7 +522,7 @@ class SettingsScreen(
         orientation = VERTICAL
         val col = LinearLayout(ctx).apply { orientation = VERTICAL }
         val width = if (Look.crt) MATCH else ctx.dp(620)
-        listOf(region, language, onlyListed, hideDead, dpadSurf, crtMode, crtStretch, crtSignal, crtOverscan, crtOverscanVideo, crtGuideChannel, crtStatic, crtStaticSound, refreshNow, update).forEach {
+        listOf(barRow, region, language, onlyListed, hideDead, dpadSurf, crtMode, crtStretch, crtSignal, crtOverscan, crtOverscanVideo, crtGuideChannel, crtStatic, crtStaticSound, refreshNow, update).forEach {
             col.addView(it, LayoutParams(width, ctx.dp(40)).apply { bottomMargin = ctx.dp(4) })
         }
         col.addView(stats, LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(14); bottomMargin = ctx.dp(14) })
@@ -549,6 +553,11 @@ class SettingsScreen(
         crtStaticSound.text = "Static sound: " + onOff(prefs.staticSound)
         crtRows.forEach { it.visibility = if (prefs.crtMode) VISIBLE else GONE }
         if (update.text.isNullOrEmpty()) setUpdateText(null)
+        barRow.visibility = if (bar.available) VISIBLE else GONE
+        barRow.text = when {
+            !bar.linked -> "Bar mode: Off. Link this TV to a bar"
+            else -> "Bar mode: " + listOfNotNull(bar.feed.value?.venue?.name, bar.screenName?.let { "screen “$it”" }).joinToString(", ").ifEmpty { "Linked" }
+        }
     }
 
     /** @param text a status to show on the update row, or null for its normal label. */
@@ -557,6 +566,6 @@ class SettingsScreen(
     }
 
     fun setStats(text: String) { stats.text = text }
-    fun focusFirst() { region.requestFocus() }
+    fun focusFirst() { (if (bar.available) barRow else region).requestFocus() }
     fun focusCrt() { crtMode.requestFocus() }
 }

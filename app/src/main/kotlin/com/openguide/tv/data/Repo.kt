@@ -29,6 +29,14 @@ class Prefs(ctx: Context) {
     var region: String?
         get() = p.getString("region", null)
         set(v) = p.edit().putString("region", v).apply()
+    /** This TV's Bar Mode screen token, or null when it isn't linked to a bar. */
+    var barToken: String?
+        get() = p.getString("bar_token", null)
+        set(v) = p.edit().putString("bar_token", v).apply()
+    /** What the bar calls this screen, shown in Settings. */
+    var barScreenName: String?
+        get() = p.getString("bar_screen", null)
+        set(v) = p.edit().putString("bar_screen", v).apply()
     var favorites: Set<String>
         get() = p.getStringSet("favorites", emptySet()) ?: emptySet()
         set(v) = p.edit().putStringSet("favorites", v).apply()

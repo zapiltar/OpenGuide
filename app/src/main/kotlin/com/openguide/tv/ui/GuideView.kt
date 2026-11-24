@@ -13,6 +13,7 @@ import android.view.KeyEvent
 import android.view.View
 import com.openguide.tv.data.Block
 import com.openguide.tv.data.Channel
+import com.openguide.tv.data.BAR_CHANNEL_ID
 import com.openguide.tv.data.GUIDE_CHANNEL_ID
 import com.openguide.tv.data.HALF_HOUR
 import com.openguide.tv.data.Listings
@@ -477,6 +478,7 @@ class GuideView(
         val title = when {
             p != null -> p.title
             ch.id == GUIDE_CHANNEL_ID -> "What's on, scrolling"
+            ch.id == BAR_CHANNEL_ID -> "Menus, events and specials"
             listings.get(ch.id) == null -> "…"
             else -> "No listings"
         }

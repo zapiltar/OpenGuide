@@ -1,0 +1,5 @@
+# Copy to .dev.vars for local development only. Never set these on the deployed Worker.
+# Signs every local admin request in as this email, skipping Cloudflare Access.
+# It only works when the Worker is reached at localhost.
+DEV_ADMIN_EMAIL=you@example.com
+OWNER_EMAILS=you@example.com

@@ -1,0 +1,203 @@
+package com.openguide.tv.data
+
+import android.content.Context
+import android.util.Log
+import com.openguide.tv.BuildConfig
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONException
+import org.json.JSONObject
+import java.io.File
+import java.io.IOException
+
+data class Pairing(val code: String, val secret: String, val expiresAt: Long, val pollSeconds: Int)
+
+sealed class PairStatus {
+    object Waiting : PairStatus()
+    /** The code expired or was never valid, so ask for a new one. */
+    object Gone : PairStatus()
+    data class Linked(val token: String, val screenName: String, val venueName: String) : PairStatus()
+}
+
+/**
+ * Links this TV to a bar and keeps that bar's feed up to date: on start, every 10 minutes, and on request.
+ * The last feed is saved, so a linked TV shows its bar straight away after a restart, even offline.
+ * Does nothing unless the build names a Bar Mode server (BuildConfig.BAR_API).
+ */
+class BarMode(ctx: Context, private val http: OkHttpClient, private val prefs: Prefs) {
+    val available: Boolean = BuildConfig.BAR_API.isNotBlank()
+    private val base = BuildConfig.BAR_API.trimEnd('/')
+    private val cacheFile = File(ctx.filesDir, "bar_feed.json")
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val lock = Mutex()
+    private var poller: Job? = null
+    private var etag: String? = null
+
+    private val _feed = MutableStateFlow<BarFeed?>(null)
+    /** The linked bar's feed, or null when this TV isn't linked or hasn't got one yet. */
+    val feed: StateFlow<BarFeed?> = _feed
+
+    /** How far this TV's clock is behind the server's, so specials start on time even if the TV's clock is off. */
+    @Volatile var clockOffset = 0L
+        private set
+
+    val linked: Boolean get() = available && prefs.barToken != null
+    val screenName: String? get() = prefs.barScreenName
+
+    /** Where staff manage the bar, as shown on the TV while linking. */
+    val adminAddress: String get() = base.removePrefix("https://").removePrefix("http://") + "/admin"
+
+    fun now(): Long = System.currentTimeMillis() + clockOffset
+
+    init {
+        if (linked) loadCached()
+    }
+
+    private fun loadCached() {
+        try {
+            if (cacheFile.exists()) {
+                val text = cacheFile.readText()
+                _feed.value = parseBarFeed(text)
+                etag = prefs.etag(ETAG_KEY)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Saved bar feed is unreadable", e)
+            cacheFile.delete()
+            prefs.setEtag(ETAG_KEY, null)
+        }
+    }
+
+    /** Starts checking for changes, if linked. Safe to call more than once. */
+    fun start() {
+        if (!linked || poller?.isActive == true) return
+        poller = scope.launch {
+            while (isActive && linked) {
+                refresh()
+                delay(POLL_MS)
+            }
+        }
+    }
+
+    /** Checks for changes now, without waiting for the next scheduled check. */
+    fun refreshNow() {
+        scope.launch { refresh() }
+    }
+
+    private suspend fun refresh() = lock.withLock {
+        val token = prefs.barToken ?: return@withLock
+        val req = Request.Builder().url("$base/api/tv/feed")
+            .header("Authorization", "Bearer $token")
+            .header("X-App-Version", BuildConfig.VERSION_NAME)
+            .apply { etag?.let { header("If-None-Match", it) } }
+            .build()
+        try {
+            http.newCall(req).execute().use { res ->
+                val sentAt = System.currentTimeMillis()
+                res.header("X-Server-Time")?.toLongOrNull()?.let { clockOffset = it - sentAt }
+                when {
+                    res.code == 304 -> Unit
+                    res.code == 401 -> {
+                        Log.i(TAG, "Server says this screen was unlinked")
+                        forget()
+                    }
+                    res.isSuccessful -> {
+                        val text = res.body!!.string()
+                        val next = parseBarFeed(text)
+                        cacheFile.writeText(text)
+                        etag = res.header("ETag")
+                        prefs.setEtag(ETAG_KEY, etag)
+                        prefs.barScreenName = next.screenName
+                        _feed.value = next
+                    }
+                    else -> Log.w(TAG, "Bar feed returned HTTP ${res.code}")
+                }
+            }
+        } catch (e: IOException) {
+            Log.w(TAG, "Couldn't reach the bar server; keeping the last feed", e)
+        } catch (e: JSONException) {
+            Log.w(TAG, "Bar feed wasn't understood", e)
+        }
+    }
+
+    // ---- Linking ----
+
+    /** Asks the server for a code to show on screen. */
+    suspend fun startPairing(): Pairing = withContext(Dispatchers.IO) {
+        val req = Request.Builder().url("$base/api/tv/pair").post(ByteArray(0).toRequestBody(null)).build()
+        http.newCall(req).execute().use { res ->
+            if (!res.isSuccessful) throw IOException("The bar server returned HTTP ${res.code}")
+            val o = JSONObject(res.body!!.string())
+            Pairing(o.getString("code"), o.getString("secret"), o.getLong("expiresAt"), o.optInt("pollSeconds", 3))
+        }
+    }
+
+    /** Whether staff have entered [p]'s code yet. When they have, finishes linking this TV. */
+    suspend fun checkPairing(p: Pairing): PairStatus = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("code", p.code).put("secret", p.secret).toString().toRequestBody(JSON)
+        val req = Request.Builder().url("$base/api/tv/pair/status").post(body).build()
+        http.newCall(req).execute().use { res ->
+            if (res.code == 404 || res.code == 410) return@withContext PairStatus.Gone
+            if (!res.isSuccessful) throw IOException("The bar server returned HTTP ${res.code}")
+            val o = JSONObject(res.body!!.string())
+            if (o.optString("status") != "linked") return@withContext PairStatus.Waiting
+            val linked = PairStatus.Linked(
+                o.getString("token"),
+                o.getJSONObject("screen").getString("name"),
+                o.getJSONObject("venue").getString("name"),
+            )
+            prefs.barToken = linked.token
+            prefs.barScreenName = linked.screenName
+            etag = null
+            linked
+        }
+    }.also { if (it is PairStatus.Linked) start() }
+
+    /** Unlinks this TV: tells the server, if it can, then forgets the bar. */
+    fun unlink() {
+        val token = prefs.barToken
+        forget()
+        if (token == null) return
+        scope.launch {
+            try {
+                val req = Request.Builder().url("$base/api/tv/unlink")
+                    .header("Authorization", "Bearer $token")
+                    .post(ByteArray(0).toRequestBody(null)).build()
+                http.newCall(req).execute().close()
+            } catch (e: IOException) {
+                Log.w(TAG, "Couldn't tell the bar server this TV was unlinked", e)
+            }
+        }
+    }
+
+    private fun forget() {
+        poller?.cancel()
+        poller = null
+        prefs.barToken = null
+        prefs.barScreenName = null
+        prefs.setEtag(ETAG_KEY, null)
+        etag = null
+        cacheFile.delete()
+        _feed.value = null
+    }
+
+    private companion object {
+        const val TAG = "BarMode"
+        const val ETAG_KEY = "bar_feed"
+        const val POLL_MS = 10 * 60_000L
+        val JSON = "application/json; charset=utf-8".toMediaType()
+    }
+}

@@ -1,11 +1,23 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
 }
 
+// Release signing. keystore.properties (storeFile, storePassword, keyAlias, keyPassword) sits next to this
+// project's settings.gradle.kts and is never committed; back it up with the .jks it names. Without it,
+// release builds fall back to the local debug key, which can't update installed copies.
+val keystoreProps = rootProject.file("keystore.properties").takeIf { it.exists() }?.let { f ->
+    Properties().apply { f.inputStream().use(::load) }
+}
+
 // The release tag on GitHub must match this, with a leading "v", for the in-app update check.
-val appVersion = providers.gradleProperty("appVersion").getOrElse("1.3.1")
+val appVersion = providers.gradleProperty("appVersion").getOrElse("1.4.0")
 val updateApi = providers.gradleProperty("updateApi")
     .getOrElse("https://api.github.com/repos/zapiltar/OpenGuide/releases/latest")
+// Bar Mode's server (server/ in this repo). Empty hides Bar Mode. For an emulator against `npm run dev`,
+// build with -PbarApi=http://10.0.2.2:8787
+val barApi = providers.gradleProperty("barApi").getOrElse("")
 
 android {
     namespace = "com.openguide.tv"
@@ -19,16 +31,31 @@ android {
         versionCode = appVersion.split('.').fold(0) { acc, part -> acc * 100 + part.toInt() }
         versionName = appVersion
         buildConfigField("String", "UPDATE_API", "\"$updateApi\"")
+        buildConfigField("String", "BAR_API", "\"$barApi\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (keystoreProps != null) {
+            create("release") {
+                storeFile = file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            // Installs beside the released app, so testing doesn't mean uninstalling it.
+            applicationIdSuffix = ".debug"
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Sideload build: signed with the local debug key so it installs without a keystore.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 
@@ -55,6 +82,8 @@ dependencies {
     implementation("io.coil-kt:coil-base:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     testImplementation("junit:junit:4.13.2")
+    // Android's own org.json is only a stub in local unit tests.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("junit:junit:4.13.2")
 }
