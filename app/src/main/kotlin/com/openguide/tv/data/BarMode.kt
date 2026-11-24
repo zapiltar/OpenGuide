@@ -134,6 +134,20 @@ class BarMode(ctx: Context, private val http: OkHttpClient, private val prefs: P
         }
     }
 
+    /**
+     * Switches this screen between full picture and framed. It's saved on the server, as if changed on the
+     * bar's Screens page, then the feed is fetched again so the change shows straight away.
+     */
+    suspend fun setLayout(framed: Boolean) = withContext(Dispatchers.IO) {
+        val token = prefs.barToken ?: return@withContext
+        val body = JSONObject().put("layout", if (framed) "framed" else "full").toString().toRequestBody(JSON)
+        val req = Request.Builder().url("$base/api/tv/layout").header("Authorization", "Bearer $token").post(body).build()
+        http.newCall(req).execute().use { res ->
+            if (!res.isSuccessful) throw IOException("The bar server returned HTTP ${res.code}")
+        }
+        refresh()
+    }
+
     // ---- Linking ----
 
     /** Asks the server for a code to show on screen. */

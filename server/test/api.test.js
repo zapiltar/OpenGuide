@@ -183,6 +183,20 @@ describe("look and layout", () => {
     expect((await tv(token)).body.venue.theme).toBe(null);
   });
 
+  it("lets a TV switch its own layout, which the site then shows", async () => {
+    const venue = await newVenue();
+    const { token, screenId } = await linkTv(venue.id);
+    const before = (await tv(token)).headers.get("ETag");
+    const r = await call("POST", "/api/tv/layout", { body: { layout: "framed" }, headers: { Authorization: `Bearer ${token}` } });
+    expect(r.body).toEqual({ layout: "framed" });
+    const after = await tv(token, { "If-None-Match": before });
+    expect(after.status).toBe(200);
+    expect(after.body.screen.layout).toBe("framed");
+    expect((await call("GET", `/api/admin/venues/${venue.id}/screens`)).body[0]).toMatchObject({ id: screenId, layout: "framed" });
+    expect((await call("POST", "/api/tv/layout", { body: { layout: "huge" }, headers: { Authorization: `Bearer ${token}` } })).status).toBe(400);
+    expect((await call("POST", "/api/tv/layout", { body: { layout: "full" }, headers: { Authorization: "Bearer nope" } })).status).toBe(401);
+  });
+
   it("rejects colors that aren't #rrggbb", async () => {
     const venue = await newVenue();
     for (const theme of [{ primary: "red", secondary: "#ffffff" }, { primary: "#fff", secondary: "#ffffff" }, "blue"]) {

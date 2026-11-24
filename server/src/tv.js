@@ -118,6 +118,18 @@ export function eventDates(e, timeZone, day) {
     .map((o) => ({ e, start: o.start, end: r.end ? o.end : null }));
 }
 
+/** POST /api/tv/layout {layout}: the TV switched between full picture and framed from its own menu. */
+export async function setLayout(request, env) {
+  const screen = await screenFromToken(request, env);
+  const body = await readJson(request);
+  if (body.layout !== "full" && body.layout !== "framed") throw new HttpError(400, 'layout must be "full" or "framed"');
+  await env.DB.batch([
+    env.DB.prepare("UPDATE screens SET layout = ? WHERE id = ?").bind(body.layout, screen.id),
+    env.DB.prepare("UPDATE venues SET feed_version = feed_version + 1 WHERE id = ?").bind(screen.venue_id),
+  ]);
+  return json({ layout: body.layout });
+}
+
 /** The TV unlinked itself from its own settings, so the screen goes from the bar's list too. */
 export async function unlink(request, env) {
   const screen = await screenFromToken(request, env);

@@ -1219,6 +1219,10 @@ class MainActivity : Activity() {
                 add(PickerItem("crop", "Crop black bars"))
             }
             if (previous != null) add(PickerItem("prev", "Last channel: ${previous.name}"))
+            // The framed layout isn't used in CRT mode, so there's nothing to switch there.
+            bar.feed.value?.takeIf { !Look.crt }?.let { f ->
+                add(PickerItem("layout", if (f.framed) "Switch to full picture" else "Switch to framed view"))
+            }
             barItem?.let(::add)
             ch.streams.forEachIndexed { i, s -> add(PickerItem("src$i", "Source ${i + 1}: ${s.label}")) }
         }
@@ -1233,6 +1237,7 @@ class MainActivity : Activity() {
                 "crop" -> prefs.channelCrop(ch.id).let { (x, y) -> cropper.show(x, y) }
                 "prev" -> goToPreviousChannel()
                 "bar" -> getBarChanges()
+                "layout" -> switchLayout()
                 current -> {} // already playing this source, so don't restart it
                 else -> tune(ch, ch.streams[item.id.removePrefix("src").toInt()])
             }
@@ -1482,6 +1487,18 @@ class MainActivity : Activity() {
             updateGuideChannel()
         }
         checkSpecials()
+    }
+
+    private fun switchLayout() {
+        val framed = bar.feed.value?.framed != true
+        scope.launch {
+            try {
+                bar.setLayout(framed)
+            } catch (e: IOException) {
+                android.util.Log.w("BarMode", "Couldn't change the layout", e)
+                Toast.makeText(this@MainActivity, "Couldn't reach the bar server, so the layout wasn't changed", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private fun getBarChanges() {
