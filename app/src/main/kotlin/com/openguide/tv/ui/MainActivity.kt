@@ -105,6 +105,8 @@ class MainActivity : Activity() {
     private lateinit var guideChannelView: GuideChannelView
     private lateinit var staticView: StaticView
     private lateinit var barChannelView: BarChannelView
+    private lateinit var barFrame: BarFrameView
+    private lateinit var barBreak: BarBreakView
     private lateinit var specialOverlay: SpecialOverlay
     private lateinit var barLink: BarLinkPanel
     private var brandLabel: TextView? = null
@@ -155,6 +157,8 @@ class MainActivity : Activity() {
     /** OK was pressed while watching and hasn't yet become a hold. */
     private var okArmed = false
     private var reopenSettings = false
+    /** Rebuilt for a bar's new colors while watching, so go straight back to the channel. */
+    private var reopenFullscreen = false
     private var updateBusy = false
     /** An update waiting for permission to install apps, which is granted on another screen. */
     private var pendingApk: File? = null
@@ -176,7 +180,8 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         reopenSettings = savedInstanceState?.getBoolean(KEY_SETTINGS) == true
-        Look.use(prefs.crtMode, prefs.crtSqueezed, frameW.toFloat() / frameH)
+        reopenFullscreen = savedInstanceState?.getBoolean(KEY_FULLSCREEN) == true
+        Look.use(prefs.crtMode, prefs.crtSqueezed, frameW.toFloat() / frameH, bar.feed.value?.venue?.theme)
         buildUi()
         setContentView(root)
         startLoading()
@@ -222,6 +227,10 @@ class MainActivity : Activity() {
             visibility = View.GONE
         }
         root.addView(pipFrame, FrameLayout.LayoutParams(0, 0))
+
+        // Behind the video, which sits in its top right corner.
+        barFrame = BarFrameView(this, barImages, bar::now)
+        root.addView(barFrame, FrameLayout.LayoutParams(MATCH, MATCH))
 
         video = PlayerView(this).apply {
             useController = false
@@ -279,6 +288,10 @@ class MainActivity : Activity() {
         }
         root.addView(breakLabel, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END))
 
+        // Covers Pluto ad breaks on a bar's TV.
+        barBreak = BarBreakView(this, barImages, bar::now)
+        root.addView(barBreak, FrameLayout.LayoutParams(MATCH, MATCH))
+
         // Above the channel banner and the picture, below the menus the remote is using.
         specialOverlay = SpecialOverlay(this, barImages)
         root.addView(specialOverlay, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -324,6 +337,7 @@ class MainActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putBoolean(KEY_SETTINGS, reopenSettings || screen == Screen.SETTINGS)
+        outState.putBoolean(KEY_FULLSCREEN, screen == Screen.FULLSCREEN)
     }
 
     private fun setUiBackground(fullscreen: Boolean) {
@@ -348,7 +362,7 @@ class MainActivity : Activity() {
     /** Keeps everything but full-screen video inside the part of the picture the tube shows. */
     private fun applyOverscan() {
         // Not the picker: it's centred anyway, and its dimming should reach the screen's edges.
-        listOf<View>(shell, banner, loadingView, cropper, crtNumber, breakLabel, subtitles, guideChannelView, barChannelView, specialOverlay, barLink).forEach { v ->
+        listOf<View>(shell, banner, loadingView, cropper, crtNumber, breakLabel, subtitles, guideChannelView, barChannelView, barBreak, specialOverlay, barLink).forEach { v ->
             v.layoutParams = (v.layoutParams as FrameLayout.LayoutParams).apply {
                 setMargins(insetX, insetY, insetX, insetY)
             }
@@ -560,6 +574,9 @@ class MainActivity : Activity() {
             reopenSettings = false
             showSettings(focus = false)
             settings.focusCrt()
+        } else if (reopenFullscreen && savedChannel() != null) {
+            reopenFullscreen = false
+            tuneFullscreen(savedChannel()!!, guideList())
         } else {
             savedChannel()?.let { surfList = guideList(); tune(it) }
         }
@@ -620,6 +637,8 @@ class MainActivity : Activity() {
         if (screen == Screen.BROWSER) refreshBrowserAiring()
         refreshGuideChannel()
         barChannelView.draw()
+        barFrame.draw()
+        barBreak.draw()
     }
 
     private fun onListingsChanged() {
@@ -666,7 +685,8 @@ class MainActivity : Activity() {
         val withGuide = guideCategory == CATEGORY_ALL || (guideCategory == CATEGORY_CRT && list.isNotEmpty())
         val withGuideChannel = if (Look.crt && prefs.guideChannel && withGuide) listOf(GUIDE_CHANNEL) + list else list
         val feed = bar.feed.value
-        return if (feed != null && guideCategory == CATEGORY_ALL) listOf(barChannel(feed)) + withGuideChannel else withGuideChannel
+        val showBarChannel = feed != null && feed.channel.enabled && guideCategory == CATEGORY_ALL
+        return if (showBarChannel) listOf(barChannel(feed!!)) + withGuideChannel else withGuideChannel
     }
 
     /** What was last on, which [Repo.channel] can't find if it was the guide channel. */
@@ -674,7 +694,7 @@ class MainActivity : Activity() {
         val id = prefs.lastChannel
         return when (id) {
             GUIDE_CHANNEL_ID -> GUIDE_CHANNEL.takeIf { Look.crt && prefs.guideChannel }
-            BAR_CHANNEL_ID -> bar.feed.value?.let(::barChannel)
+            BAR_CHANNEL_ID -> bar.feed.value?.takeIf { it.channel.enabled }?.let(::barChannel)
             else -> repo.channel(id)
         }
     }
@@ -780,7 +800,11 @@ class MainActivity : Activity() {
             return
         }
         val params: FrameLayout.LayoutParams? = when (screen) {
-            Screen.FULLSCREEN -> FrameLayout.LayoutParams(MATCH, MATCH)
+            Screen.FULLSCREEN -> if (framed()) {
+                FrameLayout.LayoutParams((frameW * BarFrameView.VIDEO_SHARE).toInt(), (frameH * BarFrameView.VIDEO_SHARE).toInt(), Gravity.TOP or Gravity.END)
+            } else {
+                FrameLayout.LayoutParams(MATCH, MATCH)
+            }
             Screen.GUIDE -> FrameLayout.LayoutParams(dp(256), dp(144), Gravity.TOP or Gravity.END).apply {
                 topMargin = dp(52); rightMargin = dp(27)
             }
@@ -983,8 +1007,8 @@ class MainActivity : Activity() {
         updateGuideChannel()
         guide.tunedChannelId = ch.id
         updateStatusText()
-        // Each channel has its own picture settings.
-        if (Look.crt) placeVideo()
+        // Each channel has its own picture settings, and the bar's own channel is never framed.
+        placeVideo()
     }
 
     private fun tuneFullscreen(ch: Channel, list: List<Channel>) {
@@ -1000,6 +1024,7 @@ class MainActivity : Activity() {
         guideChannelView.visibility = if (on) View.VISIBLE else View.GONE
         if (on) refreshGuideChannel()
         barChannelView.visibility = if (screen == Screen.FULLSCREEN && player?.channel?.id == BAR_CHANNEL_ID) View.VISIBLE else View.GONE
+        barFrame.visibility = if (screen == Screen.FULLSCREEN && framed()) View.VISIBLE else View.GONE
     }
 
     private fun refreshGuideChannel() {
@@ -1024,8 +1049,16 @@ class MainActivity : Activity() {
         if (s is TuneState.Failed) guide.refreshFocus()
     }
 
+    /**
+     * A Pluto ad break gets a small label, or on a bar's TV a full-screen page of the bar's events with the
+     * sound off, until the show comes back.
+     */
     private fun updateBreakLabel() {
-        breakLabel.visibility = if (screen == Screen.FULLSCREEN && player?.onBreak == true) View.VISIBLE else View.GONE
+        val onBreak = screen == Screen.FULLSCREEN && player?.onBreak == true
+        val barBreakOn = onBreak && bar.feed.value != null
+        breakLabel.visibility = if (onBreak && !barBreakOn) View.VISIBLE else View.GONE
+        barBreak.visibility = if (barBreakOn) View.VISIBLE else View.GONE
+        player?.exo?.volume = if (barBreakOn) 0f else 1f
     }
 
     private fun applyVideoStatus() {
@@ -1165,11 +1198,14 @@ class MainActivity : Activity() {
     private fun showPlayerOptions() {
         val ch = player?.channel ?: return
         val previous = previousChannel
+        val barItem = bar.feed.value?.let { PickerItem("bar", "Get the latest from ${it.venue.name}") }
         if (isVirtualChannel(ch.id)) {
             // No stream, so no picture or source settings, and it's on every list it can be on.
-            if (previous != null) {
-                val items = listOf(PickerItem("prev", "Last channel: ${previous.name}"))
-                picker.show(ch.name, items, null, focus = "prev") { goToPreviousChannel() }
+            val items = listOfNotNull(previous?.let { PickerItem("prev", "Last channel: ${it.name}") }, barItem)
+            if (items.isNotEmpty()) {
+                picker.show(ch.name, items, null, focus = items.first().id) {
+                    if (it.id == "prev") goToPreviousChannel() else getBarChanges()
+                }
             }
             return
         }
@@ -1183,6 +1219,7 @@ class MainActivity : Activity() {
                 add(PickerItem("crop", "Crop black bars"))
             }
             if (previous != null) add(PickerItem("prev", "Last channel: ${previous.name}"))
+            barItem?.let(::add)
             ch.streams.forEachIndexed { i, s -> add(PickerItem("src$i", "Source ${i + 1}: ${s.label}")) }
         }
         val playing = (player?.state as? TuneState.Playing)?.stream
@@ -1195,6 +1232,7 @@ class MainActivity : Activity() {
                 "picture" -> pickPicture(ch)
                 "crop" -> prefs.channelCrop(ch.id).let { (x, y) -> cropper.show(x, y) }
                 "prev" -> goToPreviousChannel()
+                "bar" -> getBarChanges()
                 current -> {} // already playing this source, so don't restart it
                 else -> tune(ch, ch.streams[item.id.removePrefix("src").toInt()])
             }
@@ -1410,19 +1448,33 @@ class MainActivity : Activity() {
 
     // ---- Bar Mode ----
 
+    /** Whether this screen frames channels with the bar's info. Not in CRT mode, where the tube is too small. */
+    private fun framed(): Boolean =
+        !Look.crt && bar.feed.value?.framed == true && player?.channel?.let { !isVirtualChannel(it.id) } == true
+
     private fun brandName(): String = bar.feed.value?.venue?.name ?: "OpenGuide"
 
     private fun onBarFeed(feed: BarFeed?) {
+        // Colours are fixed when views are built, so new ones mean building them again. CRT mode keeps its own.
+        if (uiReady && !Look.crt && feed?.venue?.theme != Look.theme) {
+            recreate()
+            return
+        }
         brandLabel?.text = brandName()
         brandLogo?.let { barImages.load(it, feed?.venue?.logo) }
         loadingTitle.text = brandName()
         barChannelView.setFeed(feed)
+        barFrame.setFeed(feed)
+        barBreak.setFeed(feed)
         if (!uiReady) return
+        updateBreakLabel()
+        updateGuideChannel()
+        placeVideo()
         reloadGuide()
         settings.refresh()
-        if (feed == null) {
-            // Unlinked: nothing of the bar's should stay on screen.
-            if (specialOverlay.isShowing) endSpecial.run()
+        if (feed == null || !feed.channel.enabled) {
+            // Unlinked, or the Bar Channel was switched off: leave it.
+            if (feed == null && specialOverlay.isShowing) endSpecial.run()
             if (player?.channel?.id == BAR_CHANNEL_ID) {
                 player?.stop()
                 if (screen == Screen.FULLSCREEN) showGuide(focus = true)
@@ -1432,17 +1484,25 @@ class MainActivity : Activity() {
         checkSpecials()
     }
 
-    /** Puts up any special that's due, and takes down one whose time is up. */
+    private fun getBarChanges() {
+        bar.refreshNow()
+        Toast.makeText(this, "Getting the latest from ${brandName()}", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Puts up any special that's due, and takes down one whose time is up. A framed screen never does: its
+     * bottom bar already shows the specials, and a banner or takeover would cover the frame.
+     */
     private fun checkSpecials() {
         if (!uiReady) return
         val feed = bar.feed.value
         val now = bar.now()
         val current = specialOverlay.appearance
         if (current != null) {
-            if (now >= current.until || feed == null) endSpecial.run()
+            if (now >= current.until || feed == null || feed.framed) endSpecial.run()
             return
         }
-        if (feed == null || screen == Screen.SETTINGS || screen == Screen.LOADING) return
+        if (feed == null || feed.framed || screen == Screen.SETTINGS || screen == Screen.LOADING) return
         if (picker.isShowing || calibrator.isShowing || cropper.isShowing || barLink.isShowing) return
         val due = dueAppearance(feed.specials, now, shownSpecials) ?: return
         shownSpecials += due.key
@@ -1477,16 +1537,13 @@ class MainActivity : Activity() {
         }
         val feed = bar.feed.value
         val items = listOf(
-            PickerItem("refresh", "Check for changes now"),
+            PickerItem("refresh", "Get the latest changes now"),
             PickerItem("unlink", "Unlink this TV"),
         )
         val title = feed?.venue?.name?.let { "Linked to $it" } ?: "Linked to a bar"
         picker.show(title, items, null) { item ->
             when (item.id) {
-                "refresh" -> {
-                    bar.refreshNow()
-                    Toast.makeText(this, "Checking for changes", Toast.LENGTH_SHORT).show()
-                }
+                "refresh" -> getBarChanges()
                 "unlink" -> {
                     val confirm = listOf(PickerItem("yes", "Unlink"), PickerItem("no", "Keep it linked"))
                     picker.show("Unlink from ${feed?.venue?.name ?: "this bar"}?", confirm, null, focus = "no") {
@@ -1555,6 +1612,7 @@ class MainActivity : Activity() {
 
     private companion object {
         const val KEY_SETTINGS = "settings"
+        const val KEY_FULLSCREEN = "fullscreen"
         const val MAX_OVERSCAN = 20
         const val GUIDE_NEXT_WITHIN = 12 * 3_600_000L
     }

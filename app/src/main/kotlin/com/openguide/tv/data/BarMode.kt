@@ -34,7 +34,8 @@ sealed class PairStatus {
 }
 
 /**
- * Links this TV to a bar and keeps that bar's feed up to date: on start, every 10 minutes, and on request.
+ * Links this TV to a bar and keeps that bar's feed up to date: on start, every 2 minutes, and on request.
+ * Most checks are a cheap "nothing changed" answer.
  * The last feed is saved, so a linked TV shows its bar straight away after a restart, even offline.
  * Does nothing unless the build names a Bar Mode server (BuildConfig.BAR_API).
  */
@@ -197,7 +198,7 @@ class BarMode(ctx: Context, private val http: OkHttpClient, private val prefs: P
     private companion object {
         const val TAG = "BarMode"
         const val ETAG_KEY = "bar_feed"
-        const val POLL_MS = 10 * 60_000L
+        const val POLL_MS = 2 * 60_000L
         val JSON = "application/json; charset=utf-8".toMediaType()
     }
 }

@@ -39,6 +39,25 @@ The app appears in the Apps row. Menu names can vary a little between Android ve
 connection on port 5555 is refused, turn on **Wireless debugging** in Developer Options and use the
 `adb pair` address and code it shows.
 
+## Bar Mode
+
+Bars can link their TVs to their own page on the OpenGuide Bar site and show their specials, menus and
+events on them:
+
+- **Specials** pop up as a banner along the top, a full-screen takeover or a full-screen picture, for as long
+  as the bar chooses, repeating while they're on.
+- **The bar's own channel** sits at the top of the guide, cycling through what's on now, menus, upcoming
+  events and event posters.
+- **Framed screens** shrink the channel to the top right, with the bar's events down the left and its current
+  special along the bottom.
+- **The bar's name, logo and colors** replace OpenGuide's.
+- **Pluto TV ad breaks** show the bar's events, with the sound off, until the show returns.
+
+To link a TV, open **Settings > Bar mode** and type the code it shows into the bar's **Screens** page on the
+site. Accounts on the site are invite-only: the site owner adds each bar and sends its manager an invite
+link. A linked TV checks for changes every 2 minutes, or right away with **Get the latest** in the options
+you get by holding OK.
+
 ## Remote
 
 Everything works with just the D-pad, OK and Back, plus Channel Up and Down to change channel. If your
@@ -162,9 +181,9 @@ Git ignores that file, so the key and its passwords never reach the repository. 
 every install would have to be removed and set up again. Without `keystore.properties`, release builds
 use the local debug key, which is only good for testing.
 
-Bar Mode, which lets a bar show its menus, events and specials on its TVs, is only in builds that name
-its server: add `-PbarApi=https://your-worker.example` to the build command. The server and its admin
-site are in [`server/`](server/README.md).
+Bar Mode lets a bar show its menus, events and specials on its TVs. Builds talk to the Bar Mode server at
+`openguide-bar.openguide-bar-server.workers.dev` unless given another with `-PbarApi=...`, and
+`-PbarApi=` (empty) leaves Bar Mode out. The server and its admin site are in [`server/`](server/README.md).
 
 ## Releasing
 

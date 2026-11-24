@@ -1,3 +1,4 @@
+import { handleAuth } from "./accounts.js";
 import { handleAdmin } from "./admin.js";
 import { HttpError, json } from "./http.js";
 import { feed, pairingStatus, startPairing, unlink } from "./tv.js";
@@ -10,6 +11,9 @@ async function route(request, env, ctx) {
   const path = url.pathname.replace(/\/+$/, "");
   const method = request.method;
 
+  if (path.startsWith("/api/auth/")) {
+    return handleAuth(request, env, path.slice("/api/auth/".length).split("/"));
+  }
   if (path.startsWith("/api/admin/")) {
     return handleAdmin(request, env, path.slice("/api/admin/".length).split("/"));
   }

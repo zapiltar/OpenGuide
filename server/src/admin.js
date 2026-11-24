@@ -1,4 +1,5 @@
-import { checkSameOrigin, identify, requireOwner, requireVenue } from "./auth.js";
+import { INVITE_DAYS, RESET_DAYS, changePassword, makeLink } from "./accounts.js";
+import { checkSameOrigin, identify, requireManager, requireOwner, requireVenue } from "./auth.js";
 import { HttpError, imageUrl, json, readJson } from "./http.js";
 import { cleanUpPairings, normalizeCode } from "./tv.js";
 import * as v from "./validate.js";
@@ -17,6 +18,10 @@ function venueOut(row, origin) {
     logo: row.logo_key,
     logoUrl: imageUrl(origin, row.logo_key),
     timezone: row.timezone,
+    theme: row.theme_primary ? { primary: row.theme_primary, secondary: row.theme_secondary } : null,
+    // What the signed-in person is at this bar: "owner", "manager" or "staff".
+    role: row.role,
+    channel: v.channelOf(row.channel),
     feedVersion: row.feed_version,
     createdAt: row.created_at,
   };
@@ -62,19 +67,26 @@ const KINDS = {
   events: {
     table: "events",
     order: "starts_at",
-    columns: ["title", "description", "image_key", "starts_at", "ends_at", "screens"],
-    parse(body, venueId, screens) {
+    columns: ["title", "description", "image_key", "picture_only", "starts_at", "ends_at", "repeat", "screens"],
+    parse(body, venueId, screens, venue) {
+      const image = v.imageKey(body.image, venueId);
+      if (body.fullScreen !== undefined && typeof body.fullScreen !== "boolean") throw new HttpError(400, "fullScreen must be true or false");
+      if (body.fullScreen && !image) throw new HttpError(400, "Upload a picture to show it full screen");
+      const common = {
+        title: v.text(body.title, "title", { max: 100, required: true }),
+        description: v.text(body.description, "description", { max: 1000 }),
+        image_key: image,
+        picture_only: body.fullScreen ? 1 : 0,
+        screens: jsonOrNull(v.screenList(body.screens, screens)),
+      };
+      if (body.repeat) {
+        const r = v.eventRepeat(body.repeat, venue.timezone);
+        return { ...common, starts_at: r.startsAt, ends_at: r.endsAt, repeat: JSON.stringify(r.repeat) };
+      }
       const start = v.time(body.start, "start");
       const end = v.time(body.end, "end", { nullable: true });
       if (end !== null && end <= start) throw new HttpError(400, "end must be after start");
-      return {
-        title: v.text(body.title, "title", { max: 100, required: true }),
-        description: v.text(body.description, "description", { max: 1000 }),
-        image_key: v.imageKey(body.image, venueId),
-        starts_at: start,
-        ends_at: end,
-        screens: jsonOrNull(v.screenList(body.screens, screens)),
-      };
+      return { ...common, starts_at: start, ends_at: end, repeat: null };
     },
     out: (r, origin) => ({
       id: r.id,
@@ -82,8 +94,10 @@ const KINDS = {
       description: r.description,
       image: r.image_key,
       imageUrl: imageUrl(origin, r.image_key),
+      fullScreen: r.picture_only === 1,
       start: r.starts_at,
       end: r.ends_at,
+      repeat: r.repeat ? JSON.parse(r.repeat) : null,
       screens: r.screens ? JSON.parse(r.screens) : null,
       updatedAt: r.updated_at,
     }),
@@ -91,18 +105,22 @@ const KINDS = {
   specials: {
     table: "specials",
     order: "title",
-    columns: ["title", "text", "image_key", "schedule", "display", "timeout_seconds", "repeat_minutes", "enabled", "screens"],
+    columns: ["title", "text", "image_key", "schedule", "display", "picture_only", "timeout_seconds", "repeat_minutes", "enabled", "screens"],
     parse(body, venueId, screens) {
-      const display = v.oneOf(body.display, "display", ["banner", "takeover"], "banner");
+      // "picture" is a takeover showing only the uploaded image.
+      const display = v.oneOf(body.display, "display", ["banner", "takeover", "picture"], "banner");
+      const image = v.imageKey(body.image, venueId);
+      if (display === "picture" && !image) throw new HttpError(400, "A full-screen picture special needs a picture");
       if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
         throw new HttpError(400, "enabled must be true or false");
       }
       return {
         title: v.text(body.title, "title", { max: 100, required: true }),
         text: v.text(body.text, "text", { max: 300 }),
-        image_key: v.imageKey(body.image, venueId),
+        image_key: image,
         schedule: JSON.stringify(v.schedule(body.schedule)),
-        display,
+        display: display === "picture" ? "takeover" : display,
+        picture_only: display === "picture" ? 1 : 0,
         timeout_seconds: v.timeoutSeconds(body.timeoutSeconds, display),
         repeat_minutes: v.integer(body.repeatMinutes, "repeatMinutes", { min: 1, max: 1440, nullable: true }),
         enabled: body.enabled === false ? 0 : 1,
@@ -116,7 +134,7 @@ const KINDS = {
       image: r.image_key,
       imageUrl: imageUrl(origin, r.image_key),
       schedule: JSON.parse(r.schedule),
-      display: r.display,
+      display: r.picture_only ? "picture" : r.display,
       timeoutSeconds: r.timeout_seconds,
       repeatMinutes: r.repeat_minutes,
       enabled: r.enabled === 1,
@@ -138,16 +156,17 @@ export async function handleAdmin(request, env, path) {
   const [section, venueId, sub, itemId, extra] = path;
 
   if (section === "me" && path.length === 1 && method === "GET") {
-    return json({ email: user.email, owner: user.owner });
+    return json({ email: user.email, name: user.name, owner: user.owner });
   }
+  if (section === "account" && venueId === "password" && method === "POST") return changePassword(request, env, user);
   if (section !== "venues") throw new HttpError(404, "Not found");
 
   // /venues
   if (venueId === undefined) {
     if (method === "GET") {
       const { results } = user.owner
-        ? await db.prepare("SELECT * FROM venues ORDER BY name").all()
-        : await db.prepare("SELECT venues.* FROM venues JOIN staff ON staff.venue_id = venues.id WHERE staff.email = ? ORDER BY name")
+        ? await db.prepare("SELECT *, 'owner' AS role FROM venues ORDER BY name").all()
+        : await db.prepare("SELECT venues.*, staff.role FROM venues JOIN staff ON staff.venue_id = venues.id WHERE staff.email = ? ORDER BY name")
           .bind(user.email).all();
       return json(results.map((r) => venueOut(r, origin)));
     }
@@ -163,7 +182,7 @@ export async function handleAdmin(request, env, path) {
       };
       await db.prepare("INSERT INTO venues (id, name, display_name, timezone, created_at) VALUES (?, ?, ?, ?, ?)")
         .bind(row.id, row.name, row.display_name, row.timezone, row.created_at).run();
-      return json(venueOut({ ...row, logo_key: null, feed_version: 1 }, origin), 201);
+      return json(venueOut({ ...row, logo_key: null, feed_version: 1, role: "owner" }, origin), 201);
     }
     throw new HttpError(405, "Method not allowed");
   }
@@ -183,9 +202,18 @@ export async function handleAdmin(request, env, path) {
       if ("displayName" in body) next.display_name = v.text(body.displayName, "displayName", { max: 60 });
       if ("logo" in body) next.logo_key = v.imageKey(body.logo, venueId, "logo");
       if ("timezone" in body) next.timezone = v.timeZone(body.timezone);
+      if ("channel" in body) {
+        const { results } = await db.prepare("SELECT id FROM menus WHERE venue_id = ?").bind(venueId).all();
+        next.channel = JSON.stringify(v.channel(body.channel, v.channelOf(venue.channel), results.map((r) => r.id)));
+      }
+      if ("theme" in body) {
+        const t = v.theme(body.theme);
+        next.theme_primary = t?.primary ?? null;
+        next.theme_secondary = t?.secondary ?? null;
+      }
       await db.batch([
-        db.prepare("UPDATE venues SET name = ?, display_name = ?, logo_key = ?, timezone = ? WHERE id = ?")
-          .bind(next.name, next.display_name, next.logo_key, next.timezone, venueId),
+        db.prepare("UPDATE venues SET name = ?, display_name = ?, logo_key = ?, timezone = ?, theme_primary = ?, theme_secondary = ?, channel = ? WHERE id = ?")
+          .bind(next.name, next.display_name, next.logo_key, next.timezone, next.theme_primary, next.theme_secondary, next.channel ?? null, venueId),
         bump(db, venueId),
       ]);
       return json(venueOut({ ...next, feed_version: venue.feed_version + 1 }, origin));
@@ -199,22 +227,55 @@ export async function handleAdmin(request, env, path) {
     throw new HttpError(405, "Method not allowed");
   }
 
-  // /venues/:id/staff
-  if (sub === "staff") {
-    requireOwner(user);
-    if (itemId === undefined && method === "GET") {
-      const { results } = await db.prepare("SELECT email, added_at FROM staff WHERE venue_id = ? ORDER BY email").bind(venueId).all();
-      return json(results.map((r) => ({ email: r.email, addedAt: r.added_at })));
+  // /venues/:id/staff and /venues/:id/invites: the bar's people. The owner and the bar's manager only.
+  if (sub === "staff" || sub === "invites") {
+    requireManager(venue);
+    const isOwner = venue.role === "owner";
+    if (sub === "staff" && itemId === undefined && method === "GET") {
+      const [members, invites] = await Promise.all([
+        db.prepare(
+          "SELECT staff.email, staff.role, staff.added_at, users.name, users.id AS user_id FROM staff LEFT JOIN users ON users.email = staff.email WHERE venue_id = ? ORDER BY staff.role, staff.email",
+        ).bind(venueId).all(),
+        db.prepare("SELECT id, role, created_by, created_at, expires_at FROM invites WHERE venue_id = ? AND expires_at > ? ORDER BY created_at DESC")
+          .bind(venueId, Date.now()).all(),
+      ]);
+      return json({
+        members: members.results.map((r) => ({ email: r.email, name: r.name, role: r.role, hasAccount: r.user_id !== null, addedAt: r.added_at })),
+        invites: invites.results.map((r) => ({ id: r.id, role: r.role, createdBy: r.created_by, createdAt: r.created_at, expiresAt: r.expires_at })),
+      });
     }
-    if (itemId === undefined && method === "POST") {
-      const email = v.email((await readJson(request)).email);
-      await db.prepare("INSERT INTO staff (venue_id, email, added_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING")
-        .bind(venueId, email, Date.now()).run();
-      return json({ email }, 201);
+    if (sub === "invites" && itemId === undefined && method === "POST") {
+      const role = v.oneOf((await readJson(request)).role, "role", ["manager", "staff"], "staff");
+      if (role === "manager" && !isOwner) throw new HttpError(403, "Only the site owner can invite managers");
+      const l = await makeLink(request, "join", INVITE_DAYS);
+      const id = crypto.randomUUID();
+      await db.prepare("INSERT INTO invites (id, token_hash, venue_id, role, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .bind(id, l.hash, venueId, role, user.email, Date.now(), l.expiresAt).run();
+      return json({ id, role, link: l.link, expiresAt: l.expiresAt }, 201);
     }
-    if (itemId !== undefined && method === "DELETE") {
-      await db.prepare("DELETE FROM staff WHERE venue_id = ? AND email = ?").bind(venueId, decodeURIComponent(itemId).toLowerCase()).run();
+    if (sub === "invites" && itemId !== undefined && method === "DELETE") {
+      await db.prepare("DELETE FROM invites WHERE id = ? AND venue_id = ?").bind(itemId, venueId).run();
       return new Response(null, { status: 204 });
+    }
+    if (sub === "staff" && itemId !== undefined) {
+      const email = decodeURIComponent(itemId).toLowerCase();
+      const member = await db.prepare("SELECT * FROM staff WHERE venue_id = ? AND email = ?").bind(venueId, email).first();
+      if (!member) throw new HttpError(404, "That person isn't at this bar");
+      if (!isOwner && member.role === "manager") throw new HttpError(403, "Only the site owner can change a manager's access");
+      if (method === "DELETE") {
+        await db.prepare("DELETE FROM staff WHERE venue_id = ? AND email = ?").bind(venueId, email).run();
+        return new Response(null, { status: 204 });
+      }
+      // POST /venues/:id/staff/:email/reset: a one-time link to set a new password.
+      if (method === "POST" && extra === "reset") {
+        const target = await db.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
+        if (!target) throw new HttpError(404, "That person hasn't made an account yet");
+        if (target.is_owner) throw new HttpError(403, "The owner resets their own password with the setup code");
+        const l = await makeLink(request, "reset", RESET_DAYS);
+        await db.prepare("INSERT INTO password_resets (token_hash, user_id, created_by, expires_at) VALUES (?, ?, ?, ?)")
+          .bind(l.hash, target.id, user.email, l.expiresAt).run();
+        return json({ link: l.link, expiresAt: l.expiresAt }, 201);
+      }
     }
     throw new HttpError(405, "Method not allowed");
   }
@@ -226,6 +287,7 @@ export async function handleAdmin(request, env, path) {
       return json(results.map((r) => ({
         id: r.id,
         name: r.name,
+        layout: r.layout,
         linked: r.token_hash !== null,
         lastSeen: r.last_seen,
         appVersion: r.app_version,
@@ -237,9 +299,14 @@ export async function handleAdmin(request, env, path) {
       const screen = await db.prepare("SELECT * FROM screens WHERE id = ? AND venue_id = ?").bind(itemId, venueId).first();
       if (!screen) throw new HttpError(404, "No such screen");
       if (method === "PATCH") {
-        const name = v.text((await readJson(request)).name, "name", { max: 60, required: true });
-        await db.batch([db.prepare("UPDATE screens SET name = ? WHERE id = ?").bind(name, itemId), bump(db, venueId)]);
-        return json({ id: itemId, name });
+        const body = await readJson(request);
+        const name = "name" in body ? v.text(body.name, "name", { max: 60, required: true }) : screen.name;
+        const layout = "layout" in body ? v.oneOf(body.layout, "layout", ["full", "framed"]) : screen.layout;
+        await db.batch([
+          db.prepare("UPDATE screens SET name = ?, layout = ? WHERE id = ?").bind(name, layout, itemId),
+          bump(db, venueId),
+        ]);
+        return json({ id: itemId, name, layout });
       }
       if (method === "DELETE") {
         // Its token stops working at once; the TV sees a 401 on its next check and unlinks itself.
@@ -265,7 +332,7 @@ export async function handleAdmin(request, env, path) {
       return json(results.map((r) => kind.out(r, origin)));
     }
     if (method === "POST") {
-      const row = kind.parse(await readJson(request), venueId, await screenIds(db, venueId));
+      const row = kind.parse(await readJson(request), venueId, await screenIds(db, venueId), venue);
       const id = crypto.randomUUID();
       const now = Date.now();
       const cols = ["id", "venue_id", ...kind.columns, "updated_at"];
@@ -282,7 +349,7 @@ export async function handleAdmin(request, env, path) {
   if (!existing) throw new HttpError(404, "Not found");
   if (method === "GET") return json(kind.out(existing, origin));
   if (method === "PUT") {
-    const row = kind.parse(await readJson(request), venueId, await screenIds(db, venueId));
+    const row = kind.parse(await readJson(request), venueId, await screenIds(db, venueId), venue);
     const now = Date.now();
     await db.batch([
       db.prepare(`UPDATE ${table} SET ${kind.columns.map((c) => `${c} = ?`).join(", ")}, updated_at = ? WHERE id = ?`)
@@ -319,7 +386,7 @@ async function claimScreen(request, db, venueId) {
     await db.prepare("DELETE FROM screens WHERE id = ?").bind(id).run();
     throw new HttpError(409, "That code has already been used");
   }
-  return json({ id, name, linked: false, lastSeen: null, appVersion: null, createdAt: now }, 201);
+  return json({ id, name, layout: "full", linked: false, lastSeen: null, appVersion: null, createdAt: now }, 201);
 }
 
 async function uploadImage(request, env, venueId, origin) {

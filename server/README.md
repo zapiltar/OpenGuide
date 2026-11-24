@@ -16,8 +16,9 @@ npm install
 npm test
 ```
 
-To run the Worker at http://localhost:8787, copy `.dev.vars.example` to `.dev.vars` and put your email in it.
-Admin requests from localhost are then signed in as that email. Then create the local database and start it:
+To run the Worker at http://localhost:8787, copy `.dev.vars.example` to `.dev.vars`. Its `SETUP_CODE` is what the
+setup page asks for when you create the owner account at http://localhost:8787/admin/#/setup. Then create the
+local database and start it:
 
 ```bash
 npm run migrate:local
@@ -29,14 +30,39 @@ npm run dev
 
 ## API
 
-Admin routes need a Cloudflare Access sign-in, or the `.dev.vars` email on localhost. Writes take JSON.
+## Accounts
+
+Invite-only. The **owner** is the super user: they see and manage every bar, add bars, and invite each bar's
+manager. Their account comes from the setup page (`/admin/#/setup`), which needs the `SETUP_CODE` secret and
+closes once an owner exists. The same code also lets the owner set a new password if they forget theirs.
+
+Everyone else joins a bar through a one-time **invite link** (valid 7 days) that the owner or the bar's
+**manager** makes on the bar's People page and passes on. Managers can invite and remove staff and make
+**password reset links** for them (valid 3 days). Staff manage the bar's content. Nothing is emailed, so links
+are passed on by text or email by whoever made them.
+
+Passwords are stored as salted PBKDF2-SHA256 hashes. Sessions last 30 days in a Secure, HttpOnly,
+SameSite=Lax cookie, and are stored only as hashes. An account locks for 15 minutes after 10 wrong passwords,
+and an address after 30 wrong tries in 15 minutes. Resetting or changing a password signs out everywhere else.
+
+## API
+
+Admin routes need a signed-in session. Writes take JSON, and must come from the site itself.
 
 | Route | What it does |
 |-------|--------------|
+| `POST /api/auth/login`, `POST /api/auth/logout` | Sign in with `{email, password}`; sign out |
+| `GET, POST /api/auth/setup` | Whether setup is needed; create the owner, or reset the owner's password, with `{code, email, password}` |
+| `GET, POST /api/auth/invite/:token` | What an invite is for; join with `{email, password, name}` (an existing account just needs its password) |
+| `GET, POST /api/auth/reset/:token` | Whose reset link it is; set `{password}` |
+| `POST /api/admin/account/password` | Change your own password with `{current, password}` |
+
 | `GET /api/admin/me` | Who you're signed in as, and whether you're the owner |
 | `GET, POST /api/admin/venues` | List bars you can manage; add a bar (owner) |
 | `GET, PATCH, DELETE /api/admin/venues/:id` | A bar's details and branding (`displayName`, `logo`, `timezone`). Renaming and deleting are owner only |
-| `GET, POST /api/admin/venues/:id/staff`, `DELETE .../staff/:email` | Who can manage the bar (owner only) |
+| `GET /api/admin/venues/:id/staff` | The bar's people and unused invites (owner or manager) |
+| `POST /api/admin/venues/:id/invites`, `DELETE .../invites/:id` | Make an invite link with `{role}` ("staff", or "manager" for the owner); cancel one |
+| `DELETE /api/admin/venues/:id/staff/:email`, `POST .../staff/:email/reset` | Remove someone; make a password reset link for them |
 | `GET, POST /api/admin/venues/:id/screens` | Linked TVs; link one with `{code, name}` |
 | `PATCH, DELETE /api/admin/venues/:id/screens/:sid` | Rename or unlink a TV |
 | `POST /api/admin/venues/:id/images` | Upload an image (PNG, JPEG, WebP or GIF, up to 5 MB) as the raw body; returns its `key` |
@@ -75,7 +101,11 @@ npx wrangler d1 create openguide-bar
 npx wrangler r2 bucket create openguide-bar-images
 ```
 
-2. Set `OWNER_EMAILS` in `wrangler.jsonc`, then create the tables and deploy:
+2. Set the setup code, a long random string only you know, then create the tables and deploy:
+
+```bash
+npx wrangler secret put SETUP_CODE
+```
 
 ```bash
 npm run migrate:remote
@@ -85,12 +115,11 @@ npm run migrate:remote
 npm run deploy
 ```
 
-3. In the Cloudflare dashboard, under **Zero Trust > Access > Applications**, add a self-hosted application
-   for the Worker's address covering the paths `/admin` and `/api/admin`. Allow the owner's and staff's emails
-   with a one-time PIN login. Copy the application's **AUD tag** and your **team domain** into `ACCESS_AUD`
-   and `ACCESS_TEAM_DOMAIN` in `wrangler.jsonc`, then deploy again.
+3. Open `/admin/#/setup` on the Worker's address, enter the setup code, and create your owner account. Then
+   add each bar and send its manager the invite link.
 
-Never set `DEV_ADMIN_EMAIL` on the deployed Worker. It's only honoured on localhost anyway.
+`.dev.vars` can also set `DEV_ADMIN_EMAIL` to skip signing in while developing. Never set it on the deployed
+Worker; it's only honoured on localhost anyway.
 
 ## Admin site
 
@@ -103,7 +132,7 @@ you can manage, each with these pages:
 - **Events:** upcoming and past.
 - **Screens:** link a TV by its code, rename it, see whether it's online, unlink it.
 - **Name & logo:** what the TVs show in place of OpenGuide, and the bar's time zone.
-- **Staff** (owner only): who else can manage the bar.
+- **People** (owner and the bar's managers): invite links, password reset links, and removing people.
 
 Every time on the site is in the bar's time zone. `public/shared/schedule.js` holds the time zone rules, and
 both the Worker and the site use that same file.

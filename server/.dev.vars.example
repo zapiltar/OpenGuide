@@ -1,5 +1,10 @@
-# Copy to .dev.vars for local development only. Never set these on the deployed Worker.
-# Signs every local admin request in as this email, skipping Cloudflare Access.
-# It only works when the Worker is reached at localhost.
-DEV_ADMIN_EMAIL=you@example.com
-OWNER_EMAILS=you@example.com
+# Copy to .dev.vars for local development. Never put these on the deployed Worker, except SETUP_CODE as a secret.
+
+# The code the setup page asks for when creating the owner account. On the deployed Worker, set it with
+# `npx wrangler secret put SETUP_CODE` and make it long and random.
+SETUP_CODE=local-setup-code
+
+# Optional: skip signing in. Every admin request from localhost is treated as this email, and OWNER_EMAILS
+# decides whether that's the owner. Only honoured on localhost. Leave these out to try the real sign-in.
+# DEV_ADMIN_EMAIL=you@example.com
+# OWNER_EMAILS=you@example.com

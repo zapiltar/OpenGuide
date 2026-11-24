@@ -7,12 +7,22 @@ import org.json.JSONObject
 // (the server in this repo's server/ folder). This file holds what the TV gets and the rules for when a special
 // appears, kept free of Android so they can be unit tested.
 
-data class BarVenue(val name: String, val logo: String?, val timezone: String)
+/** [theme] is null when the bar keeps OpenGuide's own colors. */
+data class BarVenue(val name: String, val logo: String?, val timezone: String, val theme: BarTheme? = null)
 data class MenuItem(val name: String, val price: String?, val description: String?)
 data class MenuSection(val title: String?, val items: List<MenuItem>)
 /** A menu is either a picture ([image]) or typed-in [sections]. */
 data class BarMenu(val id: String, val title: String, val image: String?, val sections: List<MenuSection>)
-data class BarEvent(val id: String, val title: String, val description: String?, val image: String?, val start: Long, val end: Long?)
+data class BarEvent(
+    val id: String,
+    val title: String,
+    val description: String?,
+    val image: String?,
+    val start: Long,
+    val end: Long?,
+    /** On the Bar Channel, show only [image], filling the screen. */
+    val fullScreen: Boolean = false,
+)
 data class Occurrence(val start: Long, val end: Long)
 
 data class Special(
@@ -28,15 +38,31 @@ data class Special(
     val repeatMinutes: Int?,
     /** Start and end times worked out by the server, in the bar's time zone, for about the next week. */
     val occurrences: List<Occurrence>,
+    /** A takeover that is only [image], filling the screen, with no text over it. */
+    val pictureOnly: Boolean = false,
+)
+
+/** What the Bar Channel shows, set on the website's Bar Channel tab. */
+data class BarChannelSettings(
+    val enabled: Boolean = true,
+    val onNow: Boolean = true,
+    val later: Boolean = true,
+    val events: Boolean = true,
+    val posters: Boolean = true,
+    val hiddenMenus: Set<String> = emptySet(),
+    val seconds: Int = 12,
 )
 
 data class BarFeed(
     val version: Int,
     val venue: BarVenue,
     val screenName: String,
+    /** The picture fills the screen, or is framed by the bar's info along the left and bottom. */
+    val framed: Boolean = false,
     val menus: List<BarMenu>,
     val events: List<BarEvent>,
     val specials: List<Special>,
+    val channel: BarChannelSettings = BarChannelSettings(),
 )
 
 const val BAR_CHANNEL_ID = "openguide.bar-channel"
@@ -59,8 +85,27 @@ fun parseBarFeed(json: String): BarFeed {
     val venue = o.getJSONObject("venue")
     return BarFeed(
         version = o.getInt("version"),
-        venue = BarVenue(venue.getString("name"), venue.str("logo"), venue.getString("timezone")),
+        venue = BarVenue(
+            venue.getString("name"),
+            venue.str("logo"),
+            venue.getString("timezone"),
+            venue.optJSONObject("theme")?.let { t ->
+                BarTheme(t.getString("primary"), t.getString("secondary")).takeIf { isHexColor(it.primary) && isHexColor(it.secondary) }
+            },
+        ),
+        channel = venue.optJSONObject("channel")?.let { c ->
+            BarChannelSettings(
+                enabled = c.optBoolean("enabled", true),
+                onNow = c.optBoolean("onNow", true),
+                later = c.optBoolean("later", true),
+                events = c.optBoolean("events", true),
+                posters = c.optBoolean("posters", true),
+                hiddenMenus = c.optJSONArray("hiddenMenus")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } ?: emptySet(),
+                seconds = c.optInt("seconds", 12).coerceIn(5, 60),
+            )
+        } ?: BarChannelSettings(),
         screenName = o.getJSONObject("screen").getString("name"),
+        framed = o.getJSONObject("screen").optString("layout") == "framed",
         menus = o.optJSONArray("menus").map { m ->
             BarMenu(
                 id = m.getString("id"),
@@ -72,7 +117,10 @@ fun parseBarFeed(json: String): BarFeed {
             )
         },
         events = o.optJSONArray("events").map { e ->
-            BarEvent(e.getString("id"), e.getString("title"), e.str("description"), e.str("image"), e.getLong("start"), e.long("end"))
+            BarEvent(
+                e.getString("id"), e.getString("title"), e.str("description"), e.str("image"), e.getLong("start"), e.long("end"),
+                fullScreen = e.optBoolean("fullScreen") && e.str("image") != null,
+            )
         },
         specials = o.optJSONArray("specials").map { s ->
             Special(
@@ -80,8 +128,9 @@ fun parseBarFeed(json: String): BarFeed {
                 title = s.getString("title"),
                 text = s.str("text"),
                 image = s.str("image"),
-                takeover = s.optString("display") == "takeover",
+                takeover = s.optString("display") in setOf("takeover", "picture"),
                 timeoutSeconds = s.int("timeoutSeconds"),
+                pictureOnly = s.optString("display") == "picture" && s.str("image") != null,
                 repeatMinutes = s.int("repeatMinutes"),
                 occurrences = s.optJSONArray("occurrences").map { Occurrence(it.getLong("start"), it.getLong("end")) },
             )

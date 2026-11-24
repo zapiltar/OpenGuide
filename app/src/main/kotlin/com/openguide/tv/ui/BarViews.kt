@@ -84,9 +84,9 @@ class SpecialOverlay(ctx: Context, private val images: BarImages) : FrameLayout(
     private val banner = LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        background = roundRect(Palette.PANEL, ctx.dpf(8f), Palette.ACCENT, ctx.dp(2))
+        // A little see-through, so the game still shows behind it.
+        background = roundRect((0xD9 shl 24) or (Palette.PANEL and 0xFFFFFF), ctx.dpf(8f), Palette.ACCENT, ctx.dp(2))
         setPadding(ctx.dp(20), ctx.dp(14), ctx.dp(24), ctx.dp(14))
-        elevation = ctx.dpf(6f)
     }
     private val bannerImage = ImageView(ctx).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
     private val bannerKicker = ctx.label(size = 13f, color = Palette.ACCENT, bold = true)
@@ -130,10 +130,17 @@ class SpecialOverlay(ctx: Context, private val images: BarImages) : FrameLayout(
         if (s.takeover) {
             banner.visibility = GONE
             takeover.visibility = VISIBLE
+            // A picture special is the bar's own design: only the image, on black, edge to edge.
+            val picture = s.pictureOnly
+            takeover.setBackgroundColor(if (picture) Color.BLACK else Palette.BG)
+            val pad = if (picture) 0 else context.dp(48)
+            takeover.setPadding(pad, if (picture) 0 else context.dp(32), pad, if (picture) 0 else context.dp(24))
+            (takeoverImage.layoutParams as LinearLayout.LayoutParams).setMargins(0, if (picture) 0 else context.dp(16), 0, if (picture) 0 else context.dp(16))
+            listOf(takeoverKicker, takeoverTitle, takeoverHint).forEach { it.visibility = if (picture) GONE else VISIBLE }
             takeoverKicker.text = barName
             takeoverTitle.text = s.title
             takeoverText.text = s.text.orEmpty()
-            takeoverText.visibility = if (s.text.isNullOrEmpty()) GONE else VISIBLE
+            takeoverText.visibility = if (s.text.isNullOrEmpty() || picture) GONE else VISIBLE
             images.load(takeoverImage, s.image)
             // Without a picture, the empty space would push the words to the top.
             if (s.image == null) takeoverImage.visibility = INVISIBLE
@@ -170,12 +177,16 @@ class BarChannelView(ctx: Context, private val images: BarImages, private val no
     private val heading = ctx.label(size = 34f, bold = true)
     private val body = FrameLayout(ctx)
     private val dots = ctx.label(size = 16f, color = Palette.FAINT).apply { gravity = Gravity.CENTER }
+    private val header = LinearLayout(ctx).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+    private val pagePad = ctx.dp(if (Look.crt) 16 else 40)
+
+    private val pageMs get() = (feed?.channel?.seconds ?: 12) * 1000L
 
     private val advance = object : Runnable {
         override fun run() {
             page = (page + 1) % pageCount
             draw()
-            postDelayed(this, PAGE_MS)
+            postDelayed(this, pageMs)
         }
     }
 
@@ -183,9 +194,7 @@ class BarChannelView(ctx: Context, private val images: BarImages, private val no
         orientation = VERTICAL
         visibility = GONE
         setBackgroundColor(Palette.BG)
-        val pad = ctx.dp(if (Look.crt) 16 else 40)
-        setPadding(pad, ctx.dp(24), pad, ctx.dp(16))
-        val header = LinearLayout(ctx).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        setChrome(true)
         header.addView(logo, LayoutParams(ctx.dp(64), ctx.dp(48)).apply { rightMargin = ctx.dp(14) })
         header.addView(barName, LayoutParams(0, WRAP, 1f))
         header.addView(clock, LayoutParams(WRAP, WRAP))
@@ -206,7 +215,7 @@ class BarChannelView(ctx: Context, private val images: BarImages, private val no
         if (isShown) {
             page = 0
             draw()
-            postDelayed(advance, PAGE_MS)
+            postDelayed(advance, pageMs)
         }
     }
 
@@ -218,17 +227,36 @@ class BarChannelView(ctx: Context, private val images: BarImages, private val no
     private sealed class Page {
         class Menu(val menu: BarMenu) : Page()
         class Events(val events: List<BarEvent>) : Page()
+        class Poster(val event: BarEvent) : Page()
         class Specials(val specials: List<Pair<Special, Occurrence>>) : Page()
+        class OnNow(val special: Special, val occurrence: Occurrence) : Page()
         object Empty : Page()
     }
 
+    /** The pages, in order, as chosen on the website's Bar Channel tab. */
     private fun pages(f: BarFeed, t: Long): List<Page> = buildList {
-        val specials = specialsComingUp(f.specials, t, DAY_MS)
-        if (specials.isNotEmpty()) add(Page.Specials(specials))
-        f.menus.forEach { add(Page.Menu(it)) }
+        val c = f.channel
+        // Specials that are on lead, each with a page of its own in big type. Later ones share a list.
+        val (onNow, later) = specialsComingUp(f.specials, t, DAY_MS).partition { it.second.start <= t }
+        if (c.onNow) onNow.forEach { (s, o) -> add(Page.OnNow(s, o)) }
+        if (c.later && later.isNotEmpty()) add(Page.Specials(later))
+        f.menus.filter { it.id !in c.hiddenMenus }.forEach { add(Page.Menu(it)) }
         val events = upcomingEvents(f.events, t)
-        if (events.isNotEmpty()) add(Page.Events(events))
+        if (c.events && events.isNotEmpty()) add(Page.Events(events))
+        // Each event with a picture can also get a page of its own, poster first.
+        // A repeating event arrives as several dates ("id@start"), and gets one page, for its next date.
+        if (c.posters) events.filter { it.image != null }.distinctBy { it.id.substringBefore("@") }.forEach { add(Page.Poster(it)) }
         if (isEmpty()) add(Page.Empty)
+    }
+
+    /** The header, heading, page dots and margins, which a full-screen picture page hides. */
+    private fun setChrome(on: Boolean) {
+        val v = if (on) VISIBLE else GONE
+        header.visibility = v
+        heading.visibility = v
+        dots.visibility = v
+        setBackgroundColor(if (on) Palette.BG else Color.BLACK)
+        if (on) setPadding(pagePad, context.dp(24), pagePad, context.dp(16)) else setPadding(0, 0, 0, 0)
     }
 
     /** Redraws the current page. Called every page change, and by MainActivity's clock tick. */
@@ -245,10 +273,22 @@ class BarChannelView(ctx: Context, private val images: BarImages, private val no
         page %= pageCount
         dots.text = if (pageCount > 1) (0 until pageCount).joinToString("  ") { if (it == page) "●" else "○" } else ""
         body.removeAllViews()
-        when (val p = all[page]) {
+        heading.setTextColor(Palette.TEXT)
+        val p = all[page]
+        val fullPicture = p is Page.Poster && p.event.fullScreen
+        setChrome(!fullPicture)
+        if (fullPicture) {
+            val img = ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
+            body.addView(img, FrameLayout.LayoutParams(MATCH, MATCH))
+            images.load(img, (p as Page.Poster).event.image)
+            return
+        }
+        when (p) {
             is Page.Menu -> menuPage(p.menu)
             is Page.Events -> listPage("Coming up", p.events.map { e -> Triple(bc.span(e.start, e.end, t), e.title, e.description) })
-            is Page.Specials -> listPage("Specials", p.specials.map { (s, o) -> Triple(bc.span(o.start, o.end, t), s.title, s.text) })
+            is Page.Specials -> listPage("Later today", p.specials.map { (s, o) -> Triple(bc.span(o.start, o.end, t), s.title, s.text) })
+            is Page.Poster -> posterPage(p.event, bc.span(p.event.start, p.event.end, t))
+            is Page.OnNow -> onNowPage(p.special, "Until ${bc.time(p.occurrence.end)}")
             Page.Empty -> {
                 heading.text = "Welcome"
                 body.addView(context.label("Menus, events and specials will appear here.", 22f, Palette.MUTED, lines = 3), FrameLayout.LayoutParams(MATCH, WRAP))
@@ -299,6 +339,39 @@ class BarChannelView(ctx: Context, private val images: BarImages, private val no
         body.addView(row, FrameLayout.LayoutParams(MATCH, WRAP))
     }
 
+    /** A special that's on now, as big as the screen allows, with its picture beside it if it has one. */
+    private fun onNowPage(s: Special, untilText: String) {
+        heading.text = "On now"
+        heading.setTextColor(Palette.ACCENT)
+        val row = LinearLayout(context).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        if (s.image != null) {
+            val img = ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
+            row.addView(img, LayoutParams(0, MATCH, 1f).apply { rightMargin = context.dp(36) })
+            images.load(img, s.image)
+        }
+        val col = LinearLayout(context).apply { orientation = VERTICAL; gravity = Gravity.CENTER_VERTICAL }
+        col.addView(context.label(s.title, if (s.image != null) 64f else 84f, bold = true, lines = 3), LayoutParams(MATCH, WRAP))
+        s.text?.let { col.addView(context.label(it, 34f, Palette.TEXT, lines = 3), LayoutParams(MATCH, WRAP).apply { topMargin = context.dp(14) }) }
+        col.addView(context.label(untilText, 30f, Palette.ACCENT, bold = true), LayoutParams(MATCH, WRAP).apply { topMargin = context.dp(18) })
+        row.addView(col, LayoutParams(0, MATCH, if (s.image != null) 1.1f else 1f))
+        body.addView(row, FrameLayout.LayoutParams(MATCH, MATCH))
+    }
+
+    /** One event: its poster on the left, and when, what and the details on the right. */
+    private fun posterPage(e: BarEvent, whenText: String) {
+        heading.text = "Coming up"
+        val row = LinearLayout(context).apply { orientation = HORIZONTAL }
+        val img = ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
+        row.addView(img, LayoutParams(0, MATCH, 1.3f))
+        val col = LinearLayout(context).apply { orientation = VERTICAL; gravity = Gravity.CENTER_VERTICAL }
+        col.addView(context.label(whenText, 22f, Palette.ACCENT, bold = true, lines = 2), LayoutParams(MATCH, WRAP))
+        col.addView(context.label(e.title, 40f, bold = true, lines = 3), LayoutParams(MATCH, WRAP).apply { topMargin = context.dp(8) })
+        e.description?.let { col.addView(context.label(it, 20f, Palette.MUTED, lines = 6), LayoutParams(MATCH, WRAP).apply { topMargin = context.dp(12) }) }
+        row.addView(col, LayoutParams(0, MATCH, 1f).apply { leftMargin = context.dp(32) })
+        body.addView(row, FrameLayout.LayoutParams(MATCH, MATCH))
+        images.load(img, e.image)
+    }
+
     /** Rows of: when (accent), title, and an optional line of detail. */
     private fun listPage(title: String, rows: List<Triple<String, String, String?>>) {
         heading.text = title
@@ -312,7 +385,6 @@ class BarChannelView(ctx: Context, private val images: BarImages, private val no
     }
 
     private companion object {
-        const val PAGE_MS = 12_000L
         const val DAY_MS = 24 * 3_600_000L
     }
 }
@@ -363,5 +435,214 @@ class BarLinkPanel(ctx: Context) : FrameLayout(ctx) {
 
     fun hide() {
         visibility = GONE
+    }
+}
+
+/**
+ * The framed layout: the channel shrinks to the top right [VIDEO_SHARE] of the screen, and the bar fills the
+ * rest. Down the left: logo, name, clock and what's coming up. Along the bottom: the special that's on now,
+ * taking turns if there are several, or the next one today.
+ */
+class BarFrameView(ctx: Context, private val images: BarImages, private val now: () -> Long) : FrameLayout(ctx) {
+    private var feed: BarFeed? = null
+    private var turn = 0
+
+    private val left = LinearLayout(ctx).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(ctx.dp(14), ctx.dp(14), ctx.dp(10), ctx.dp(8))
+    }
+    private val logo = ImageView(ctx).apply { scaleType = ImageView.ScaleType.FIT_START }
+    private val name = ctx.label(size = 15f, color = Palette.ACCENT, bold = true, lines = 2)
+    private val clock = ctx.label(size = 22f, bold = true)
+    private val comingTitle = ctx.label("Coming up", 12f, Palette.MUTED, bold = true)
+    private val coming = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+
+    private val bottom = LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(ctx.dp(18), ctx.dp(6), ctx.dp(18), ctx.dp(6))
+    }
+    private val stripe = View(ctx).apply { setBackgroundColor(Palette.ACCENT) }
+    private val specialImage = ImageView(ctx).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
+    private val kicker = ctx.label(size = 12f, color = Palette.ACCENT, bold = true)
+    private val title = ctx.label(size = 24f, bold = true)
+    private val detail = ctx.label(size = 14f, color = Palette.TEXT, lines = 1)
+
+    private val rotate = object : Runnable {
+        override fun run() {
+            turn++
+            draw()
+            postDelayed(this, TURN_MS)
+        }
+    }
+
+    init {
+        visibility = GONE
+        setBackgroundColor(Palette.BG)
+        left.addView(logo, LinearLayout.LayoutParams(MATCH, ctx.dp(72)).apply { bottomMargin = ctx.dp(8) })
+        left.addView(name, LinearLayout.LayoutParams(MATCH, WRAP))
+        left.addView(clock, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(4) })
+        left.addView(comingTitle, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(14); bottomMargin = ctx.dp(2) })
+        left.addView(coming, LinearLayout.LayoutParams(MATCH, WRAP))
+        addView(left)
+
+        bottom.addView(specialImage, LinearLayout.LayoutParams(ctx.dp(100), MATCH).apply { rightMargin = ctx.dp(14) })
+        val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(kicker, LinearLayout.LayoutParams(MATCH, WRAP))
+        col.addView(title, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(2) })
+        col.addView(detail, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(2) })
+        bottom.addView(col, LinearLayout.LayoutParams(0, WRAP, 1f))
+        addView(bottom)
+        addView(stripe)
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        val videoH = (h * VIDEO_SHARE).toInt()
+        val leftW = w - (w * VIDEO_SHARE).toInt()
+        post {
+            left.layoutParams = LayoutParams(leftW, videoH, Gravity.TOP or Gravity.START)
+            bottom.layoutParams = LayoutParams(MATCH, h - videoH, Gravity.BOTTOM)
+            stripe.layoutParams = LayoutParams(MATCH, context.dp(3), Gravity.TOP).apply { topMargin = videoH }
+        }
+    }
+
+    fun setFeed(next: BarFeed?) {
+        feed = next
+        draw()
+    }
+
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        removeCallbacks(rotate)
+        if (isShown) {
+            draw()
+            postDelayed(rotate, TURN_MS)
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        removeCallbacks(rotate)
+    }
+
+    /** Redraws everything. Called on each turn, when the feed changes, and by MainActivity's clock tick. */
+    fun draw() {
+        val f = feed ?: return
+        if (!isShown) return
+        val t = now()
+        val bc = BarClock(context, f.venue.timezone)
+        images.load(logo, f.venue.logo)
+        name.text = f.venue.name
+        clock.text = bc.time(t)
+
+        coming.removeAllViews()
+        val events = upcomingEvents(f.events, t, limit = 3)
+        comingTitle.visibility = if (events.isEmpty()) GONE else VISIBLE
+        events.firstOrNull()?.image?.let { url ->
+            val poster = ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_START }
+            coming.addView(poster, LinearLayout.LayoutParams(MATCH, context.dp(84)).apply { topMargin = context.dp(6) })
+            images.load(poster, url)
+        }
+        for (e in events) {
+            coming.addView(context.label(bc.span(e.start, e.end, t), 11f, Palette.ACCENT, bold = true, lines = 2), LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = context.dp(7) })
+            coming.addView(context.label(e.title, 14f, bold = true, lines = 2), LinearLayout.LayoutParams(MATCH, WRAP))
+        }
+
+        val today = specialsComingUp(f.specials, t, DAY_MS)
+        val onNow = today.filter { it.second.start <= t }
+        val shown = when {
+            onNow.isNotEmpty() -> onNow[turn % onNow.size]
+            today.isNotEmpty() -> today.first()
+            else -> null
+        }
+        if (shown == null) {
+            kicker.text = "Welcome to"
+            title.text = f.venue.name
+            detail.visibility = GONE
+            images.load(specialImage, null)
+            return
+        }
+        val (s, o) = shown
+        kicker.text = if (o.start <= t) "On now until ${bc.time(o.end)}" else "Coming up at ${bc.whenText(o.start, t)}"
+        title.text = s.title
+        detail.text = s.text.orEmpty()
+        detail.visibility = if (s.text.isNullOrEmpty()) GONE else VISIBLE
+        images.load(specialImage, s.image)
+    }
+
+    companion object {
+        /** How much of the screen's width and height the channel takes. The bar's info fills the rest. */
+        const val VIDEO_SHARE = 0.82f
+        private const val TURN_MS = 8_000L
+        private const val DAY_MS = 24 * 3_600_000L
+    }
+}
+
+/**
+ * Covers a Pluto TV ad break on a bar's TV, with the sound off: the bar's upcoming events, or today's specials
+ * if there are none. Keeps the ad break notice, so nobody thinks the channel has stuck.
+ */
+class BarBreakView(ctx: Context, private val images: BarImages, private val now: () -> Long) : LinearLayout(ctx) {
+    private var feed: BarFeed? = null
+    private val notice = ctx.label("Pluto ad break · show will resume · sound off", 18f, Palette.ACCENT, bold = true)
+    private val logo = ImageView(ctx).apply { scaleType = ImageView.ScaleType.FIT_START }
+    private val name = ctx.label(size = 30f, bold = true)
+    private val heading = ctx.label(size = 22f, color = Palette.MUTED, bold = true)
+    private val list = LinearLayout(ctx).apply { orientation = VERTICAL }
+    private val poster = ImageView(ctx).apply { scaleType = ImageView.ScaleType.FIT_START }
+
+    init {
+        orientation = VERTICAL
+        visibility = GONE
+        setBackgroundColor(Palette.BG)
+        val pad = ctx.dp(if (Look.crt) 16 else 48)
+        setPadding(pad, ctx.dp(28), pad, ctx.dp(20))
+        addView(notice, LayoutParams(MATCH, WRAP))
+        val header = LinearLayout(ctx).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        header.addView(logo, LayoutParams(ctx.dp(80), ctx.dp(60)).apply { rightMargin = ctx.dp(16) })
+        header.addView(name, LayoutParams(0, WRAP, 1f))
+        addView(header, LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(18) })
+        addView(heading, LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(22) })
+        val row = LinearLayout(ctx).apply { orientation = HORIZONTAL }
+        row.addView(list, LayoutParams(0, WRAP, 1f))
+        row.addView(poster, LayoutParams(0, MATCH, 0.8f).apply { leftMargin = ctx.dp(32); topMargin = ctx.dp(14) })
+        addView(row, LayoutParams(MATCH, 0, 1f))
+    }
+
+    fun setFeed(next: BarFeed?) {
+        feed = next
+        draw()
+    }
+
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        if (isShown) draw()
+    }
+
+    fun draw() {
+        val f = feed ?: return
+        if (!isShown) return
+        val t = now()
+        val bc = BarClock(context, f.venue.timezone)
+        images.load(logo, f.venue.logo)
+        name.text = f.venue.name
+        list.removeAllViews()
+        val events = upcomingEvents(f.events, t, limit = 4)
+        // The soonest event with a picture, shown beside the list.
+        images.load(poster, events.firstOrNull { it.image != null }?.image)
+        val rows = if (events.isNotEmpty()) {
+            heading.text = "Coming up"
+            events.map { Triple(bc.span(it.start, it.end, t), it.title, it.description) }
+        } else {
+            heading.text = "Specials"
+            specialsComingUp(f.specials, t, 24 * 3_600_000L).take(4).map { (s, o) -> Triple(bc.span(o.start, o.end, t), s.title, s.text) }
+        }
+        heading.visibility = if (rows.isEmpty()) GONE else VISIBLE
+        for ((whenText, title, detail) in rows) {
+            list.addView(context.label(whenText, 18f, Palette.ACCENT, bold = true), LayoutParams(MATCH, WRAP).apply { topMargin = context.dp(14) })
+            list.addView(context.label(title, 28f, bold = true), LayoutParams(MATCH, WRAP).apply { topMargin = context.dp(2) })
+            detail?.let { list.addView(context.label(it, 18f, Palette.MUTED, lines = 2), LayoutParams(MATCH, WRAP)) }
+        }
     }
 }

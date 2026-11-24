@@ -15,9 +15,9 @@ website hosted free on Cloudflare.
 
 ```
  Bar staff ──► Admin site ──┐
- (browser)   (behind        │      ┌──────────── one Cloudflare Worker ───────────┐
-              Cloudflare    ├────► │  /admin      admin pages (static files)      │
-              Access login) │      │  /api/admin  edit venues, menus, specials... │
+ (browser)   (signed in     │      ┌──────────── one Cloudflare Worker ───────────┐
+              with their    ├────► │  /admin      admin pages (static files)      │
+              own account)  │      │  /api/admin  edit venues, menus, specials... │
                             │      │  /api/tv     pairing + the TV's feed         │
  TV running OpenGuide ──────┘      │  /img        menu and special images         │
  (polls every ~10 min)             └───────┬──────────────────────┬───────────────┘
@@ -27,9 +27,10 @@ website hosted free on Cloudflare.
 
 - **One Worker** serves the admin pages and both APIs, which makes it a single thing to deploy. Cloudflare now
   points new projects at Workers with static files rather than Pages.
-- **Cloudflare Access** handles staff login with an emailed one-time code: free for up to 50 people, with no
-  passwords for us to store. The Worker checks Access's signed token on every admin request, not just a header,
-  and only shows each person their own bar.
+- **Accounts are the site's own, invite-only.** The owner (super user) sees every bar and invites each bar's
+  manager with a one-time link; managers invite their staff. Each person only sees their own bars. This
+  replaced the first plan of Cloudflare Access, which needed every email typed into Cloudflare and capped at
+  50 people. Details are in [`server/README.md`](../server/README.md#accounts).
 - **Each TV downloads its bar's whole schedule ahead of time** and runs overlays from its own clock. If the
   internet drops, specials still start on time, and polling stays far under the free limits: about 144 requests
   a day per TV, so 100 TVs is around 14,000 of the 100,000 a day allowed.
@@ -98,8 +99,8 @@ Each item can be shown on all of a bar's screens or only on the screens chosen f
    I can't create accounts for you.
 2. **Server foundation:** Worker, D1 schema and pairing, with tests that run locally through `wrangler dev`
    before anything is deployed.
-3. **Admin website:** bars, staff, screens, menus, events and specials, plus image upload to R2. Then set up
-   Cloudflare Access for staff login.
+3. **Admin website:** bars, staff, screens, menus, events and specials, plus image upload to R2, and invite-only
+   accounts.
 4. **Feed API:** schedule expansion with tests for weekly repeats, specials that run past midnight, and daylight
    saving changes.
 5. **Android: pairing, `BarFeed` and Bar Channel.**

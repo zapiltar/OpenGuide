@@ -12,18 +12,13 @@
     {
       "binding": "DB",
       "database_name": "openguide-bar",
-      // Replace with the id from `npx wrangler d1 create openguide-bar` before deploying.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      // From `npx wrangler d1 create openguide-bar`. Local development ignores it.
+      "database_id": "a29faf95-68d9-406d-b0b7-eb658f6b10e4",
       "migrations_dir": "migrations"
     }
   ],
   "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "openguide-bar-images" }],
-  "vars": {
-    // Your Cloudflare Access team domain, such as "mybars.cloudflareaccess.com".
-    "ACCESS_TEAM_DOMAIN": "",
-    // The Application Audience (AUD) tag of the Access application protecting /admin and /api/admin.
-    "ACCESS_AUD": "",
-    // Comma-separated emails that can manage every bar.
-    "OWNER_EMAILS": ""
-  }
+  // Secrets, set with `npx wrangler secret put SETUP_CODE`, not here:
+  // SETUP_CODE: a long random code that creates the owner's account on /admin/#/setup, and resets its password.
+  "vars": {}
 }

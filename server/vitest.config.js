@@ -12,6 +12,7 @@ export default defineConfig(async () => {
             TEST_MIGRATIONS: migrations,
             OWNER_EMAILS: "owner@example.com",
             DEV_ADMIN_EMAIL: "owner@example.com",
+            SETUP_CODE: "test-setup-code-123",
           },
         },
       }),

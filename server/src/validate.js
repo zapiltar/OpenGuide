@@ -1,5 +1,6 @@
 import { HttpError } from "./http.js";
-import { isTimeZone } from "./schedule.js";
+import { isTimeZone, zonedTime } from "./schedule.js";
+import { isHexColor } from "../public/shared/theme.js";
 
 const bad = (message) => new HttpError(400, message);
 
@@ -118,7 +119,82 @@ export function schedule(value) {
   throw bad('schedule.type must be "once" or "weekly"');
 }
 
-export const TIMEOUT_DEFAULTS = { banner: 30, takeover: 15 };
+/** A bar's two theme colors, or null for OpenGuide's own. */
+export function theme(value) {
+  if (value === null) return null;
+  if (!value || typeof value !== "object" || !isHexColor(value.primary) || !isHexColor(value.secondary)) {
+    throw bad('theme must be null or {"primary": "#rrggbb", "secondary": "#rrggbb"}');
+  }
+  return { primary: value.primary.toLowerCase(), secondary: value.secondary.toLowerCase() };
+}
+
+const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+function date(value, field) {
+  const m = DATE.exec(value ?? "");
+  const d = m && new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  if (!m || d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3] || +m[1] < 2020 || +m[1] > 2099) {
+    throw bad(`${field} must be a date like 2026-12-31`);
+  }
+  return { y: +m[1], mo: +m[2], d: +m[3], text: value };
+}
+
+/**
+ * A weekly repeat for an event, checked, with the time range it covers in [timeZone]: from the start of
+ * "from" to the end of "until" (endsAt null when it has no end date).
+ */
+export function eventRepeat(value, timeZone) {
+  if (!value || typeof value !== "object") throw bad("repeat must describe the days and times");
+  const days = value.days;
+  if (!Array.isArray(days) || days.length === 0 || days.some((x) => !Number.isInteger(x) || x < 0 || x > 6)) {
+    throw bad("repeat.days must list days 0 (Sunday) to 6 (Saturday)");
+  }
+  if (!CLOCK.test(value.start ?? "")) throw bad("repeat.start must be a time like 20:00");
+  const end = value.end === undefined || value.end === null || value.end === "" ? null : value.end;
+  if (end !== null && !CLOCK.test(end)) throw bad("repeat.end must be a time like 22:00, or empty");
+  if (end === value.start) throw bad("repeat.start and repeat.end can't be the same time");
+  const from = date(value.from, "repeat.from");
+  const until = value.until ? date(value.until, "repeat.until") : null;
+  if (until && until.text < from.text) throw bad("repeat.until can't be before repeat.from");
+  const nextDay = (x) => new Date(Date.UTC(x.y, x.mo - 1, x.d + 1));
+  const after = until && nextDay(until);
+  return {
+    repeat: { days: [...new Set(days)].sort(), start: value.start, end, from: from.text, until: until?.text ?? null },
+    startsAt: zonedTime(from.y, from.mo, from.d, 0, 0, timeZone),
+    endsAt: after ? zonedTime(after.getUTCFullYear(), after.getUTCMonth() + 1, after.getUTCDate(), 0, 0, timeZone) : null,
+  };
+}
+
+export const CHANNEL_DEFAULTS = Object.freeze({
+  enabled: true, onNow: true, later: true, events: true, posters: true, hiddenMenus: [], seconds: 12,
+});
+export const CHANNEL_SECONDS = [8, 12, 20, 30];
+
+/** A bar's stored channel settings, with defaults filled in. */
+export function channelOf(stored) {
+  return { ...CHANNEL_DEFAULTS, ...(stored ? JSON.parse(stored) : {}) };
+}
+
+/** Bar Channel settings from the admin site. Missing fields keep [current]'s values. */
+export function channel(value, current, menuIds) {
+  if (!value || typeof value !== "object") throw bad("channel must be an object");
+  const next = { ...current };
+  for (const k of ["enabled", "onNow", "later", "events", "posters"]) {
+    if (k in value) {
+      if (typeof value[k] !== "boolean") throw bad(`channel.${k} must be true or false`);
+      next[k] = value[k];
+    }
+  }
+  if ("seconds" in value) next.seconds = oneOf(value.seconds, "channel.seconds", CHANNEL_SECONDS);
+  if ("hiddenMenus" in value) {
+    if (!Array.isArray(value.hiddenMenus)) throw bad("channel.hiddenMenus must be a list of menu ids");
+    const known = new Set(menuIds);
+    next.hiddenMenus = [...new Set(value.hiddenMenus)].filter((id) => known.has(id));
+  }
+  return next;
+}
+
+export const TIMEOUT_DEFAULTS = { banner: 30, takeover: 15, picture: 15 };
 
 /**
  * Seconds a special stays on screen each time. null ("until the special ends") is only allowed for banners,
@@ -127,7 +203,7 @@ export const TIMEOUT_DEFAULTS = { banner: 30, takeover: 15 };
 export function timeoutSeconds(value, display) {
   if (value === undefined) return TIMEOUT_DEFAULTS[display];
   if (value === null) {
-    if (display === "takeover") throw bad("A takeover needs a timeout of 5 to 600 seconds");
+    if (display !== "banner") throw bad("A full-screen special needs a timeout of 5 to 600 seconds");
     return null;
   }
   return integer(value, "timeoutSeconds", { min: 5, max: 600 });

@@ -1,5 +1,6 @@
 import { HttpError, imageUrl, json, randomToken, readJson, sha256 } from "./http.js";
 import { occurrences } from "./schedule.js";
+import { channelOf } from "./validate.js";
 
 // Linking a TV:
 // 1. The TV calls POST /api/tv/pair and shows the returned code. It keeps the secret to itself.
@@ -11,8 +12,14 @@ import { occurrences } from "./schedule.js";
 const PAIR_TTL = 10 * 60 * 1000;
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // No 0/O, 1/I/L: easy to read off a TV across a room.
 const DAY = 86_400_000;
+// TVs check every couple of minutes. Recording each check would be most of the database's writes, so
+// "last seen" is only updated when it's this old, or the app version changed.
+const SEEN_EVERY = 4 * 60_000;
 const SPECIAL_DAYS = 7;
 const EVENT_DAYS = 60;
+// A repeating event is sent as its next few dates, so it doesn't crowd one-time events off the TVs' lists.
+const REPEAT_DAYS = 15;
+const REPEAT_DATES = 2;
 
 function newCode() {
   const b = crypto.getRandomValues(new Uint8Array(6));
@@ -89,6 +96,28 @@ async function screenFromToken(request, env) {
   return screen;
 }
 
+/**
+ * The dates an event row stands for: itself, or a repeating event's next few dates from [day] on, within its
+ * from and until dates. A repeat with no end time is sent with end null, like a one-time event.
+ */
+export function eventDates(e, timeZone, day) {
+  if (!e.repeat) return [{ e, start: e.starts_at, end: e.ends_at }];
+  const r = JSON.parse(e.repeat);
+  // occurrences() needs an end; one minute stands in for "no end time" and is dropped again below.
+  const endClock = r.end ?? (() => {
+    const [h, m] = r.start.split(":").map(Number);
+    const t = h * 60 + m + 1;
+    return `${String(Math.floor(t / 60) % 24).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+  })();
+  const from = Math.max(day, e.starts_at);
+  const to = Math.min(day + REPEAT_DAYS * DAY, e.ends_at ?? Infinity);
+  if (from >= to) return [];
+  return occurrences({ type: "weekly", days: r.days, start: r.start, end: endClock }, timeZone, from, to)
+    .filter((o) => o.start >= e.starts_at && (e.ends_at === null || o.start < e.ends_at))
+    .slice(0, REPEAT_DATES)
+    .map((o) => ({ e, start: o.start, end: r.end ? o.end : null }));
+}
+
 /** The TV unlinked itself from its own settings, so the screen goes from the bar's list too. */
 export async function unlink(request, env) {
   const screen = await screenFromToken(request, env);
@@ -106,10 +135,12 @@ export async function feed(request, env, ctx) {
   const screen = await screenFromToken(request, env);
   const now = Date.now();
   const appVersion = (request.headers.get("X-App-Version") || "").slice(0, 32) || null;
-  ctx.waitUntil(
-    env.DB.prepare("UPDATE screens SET last_seen = ?, app_version = COALESCE(?, app_version) WHERE id = ?")
-      .bind(now, appVersion, screen.id).run(),
-  );
+  if (!screen.last_seen || now - screen.last_seen >= SEEN_EVERY || (appVersion && appVersion !== screen.app_version)) {
+    ctx.waitUntil(
+      env.DB.prepare("UPDATE screens SET last_seen = ?, app_version = COALESCE(?, app_version) WHERE id = ?")
+        .bind(now, appVersion, screen.id).run(),
+    );
+  }
 
   const venue = await env.DB.prepare("SELECT * FROM venues WHERE id = ?").bind(screen.venue_id).first();
   const day = Math.floor(now / DAY) * DAY;
@@ -123,8 +154,10 @@ export async function feed(request, env, ctx) {
   const [menus, events, specials] = await Promise.all([
     env.DB.prepare("SELECT * FROM menus WHERE venue_id = ? ORDER BY sort, title").bind(venue.id).all(),
     env.DB.prepare(
-      "SELECT * FROM events WHERE venue_id = ? AND COALESCE(ends_at, starts_at) >= ? AND starts_at < ? ORDER BY starts_at LIMIT 100",
-    ).bind(venue.id, day, day + EVENT_DAYS * DAY).all(),
+      `SELECT * FROM events WHERE venue_id = ? AND starts_at < ? AND (
+         (repeat IS NULL AND COALESCE(ends_at, starts_at) >= ?) OR (repeat IS NOT NULL AND (ends_at IS NULL OR ends_at > ?))
+       ) ORDER BY starts_at LIMIT 100`,
+    ).bind(venue.id, day + EVENT_DAYS * DAY, day, day).all(),
     env.DB.prepare("SELECT * FROM specials WHERE venue_id = ? AND enabled = 1").bind(venue.id).all(),
   ]);
 
@@ -135,8 +168,10 @@ export async function feed(request, env, ctx) {
       name: venue.display_name || venue.name,
       logo: imageUrl(origin, venue.logo_key),
       timezone: venue.timezone,
+      theme: venue.theme_primary ? { primary: venue.theme_primary, secondary: venue.theme_secondary } : null,
+      channel: channelOf(venue.channel),
     },
-    screen: { id: screen.id, name: screen.name },
+    screen: { id: screen.id, name: screen.name, layout: screen.layout },
     menus: menus.results.filter((m) => forScreen(m, screen.id)).map((m) => ({
       id: m.id,
       title: m.title,
@@ -144,14 +179,19 @@ export async function feed(request, env, ctx) {
       image: imageUrl(origin, m.image_key),
       sections: m.sections ? JSON.parse(m.sections) : null,
     })),
-    events: events.results.filter((e) => forScreen(e, screen.id)).map((e) => ({
-      id: e.id,
-      title: e.title,
-      description: e.description,
-      image: imageUrl(origin, e.image_key),
-      start: e.starts_at,
-      end: e.ends_at,
-    })),
+    events: events.results
+      .filter((e) => forScreen(e, screen.id))
+      .flatMap((e) => eventDates(e, venue.timezone, day))
+      .map(({ e, start, end }) => ({
+        id: e.repeat ? `${e.id}@${start}` : e.id,
+        title: e.title,
+        description: e.description,
+        image: imageUrl(origin, e.image_key),
+        fullScreen: e.picture_only === 1,
+        start,
+        end,
+      }))
+      .sort((a, b) => a.start - b.start),
     specials: specials.results
       .filter((s) => forScreen(s, screen.id))
       .map((s) => ({
@@ -159,7 +199,7 @@ export async function feed(request, env, ctx) {
         title: s.title,
         text: s.text,
         image: imageUrl(origin, s.image_key),
-        display: s.display,
+        display: s.picture_only ? "picture" : s.display,
         timeoutSeconds: s.timeout_seconds,
         repeatMinutes: s.repeat_minutes,
         occurrences: occurrences(JSON.parse(s.schedule), venue.timezone, day - DAY, day + (SPECIAL_DAYS + 1) * DAY),

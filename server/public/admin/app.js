@@ -6,6 +6,7 @@
 // Every time shown or entered here is in the bar's own time zone, not the browser's.
 
 import { localParts, occurrences, zonedTime } from "/shared/schedule.js";
+import { PRESETS, deriveTheme } from "/shared/theme.js";
 
 const app = document.getElementById("app");
 let me = null;
@@ -241,12 +242,21 @@ async function render() {
   const id = ++renderId;
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
   try {
-    if (!me) {
-      me = await api("GET", "/me");
-      document.getElementById("who").textContent = me.email;
-    }
     let view;
-    if (parts[0] === "new-bar") view = await newBarPage();
+    // Pages that work without signing in.
+    if (parts[0] === "login") view = loginPage();
+    else if (parts[0] === "setup") view = await setupPage();
+    else if (parts[0] === "join" && parts[1]) view = await joinPage(parts[1]);
+    else if (parts[0] === "reset" && parts[1]) view = await resetPage(parts[1]);
+    if (view) {
+      if (id !== renderId) return;
+      app.replaceChildren(view);
+      window.scrollTo(0, 0);
+      return;
+    }
+    if (!me) signedIn(await api("GET", "/me"));
+    if (parts[0] === "account") view = accountPage();
+    else if (parts[0] === "new-bar") view = await newBarPage();
     else if (parts[0] === "bar" && parts[1]) view = await barPage(parts[1], parts[2] || "specials", parts[3]);
     else view = await homePage();
     if (id !== renderId || !view) return; // a newer page replaced this one while it loaded
@@ -254,6 +264,14 @@ async function render() {
     window.scrollTo(0, 0);
   } catch (e) {
     if (id !== renderId) return;
+    if (e.status === 401 && !["login", "setup", "join", "reset"].includes(parts[0])) {
+      // Signed out, or the session ran out: sign in, then come back here.
+      me = null;
+      showWho();
+      afterSignIn = location.hash || "#/";
+      app.replaceChildren(loginPage());
+      return;
+    }
     app.replaceChildren(errorPage(e));
   }
 }
@@ -306,19 +324,20 @@ async function newBarPage() {
     busy(save, async () => {
       const v = await api("POST", "/venues", { name: name.value, displayName: display.value, timezone: tz.value });
       toast("Bar added");
-      go(`#/bar/${v.id}/screens`);
+      go(`#/bar/${v.id}/staff`);
     });
   });
-  return h("div", null, h("h1", null, "Add a bar"), h("p", { class: "muted" }, "After this, link its TVs and add staff."), form);
+  return h("div", null, h("h1", null, "Add a bar"), h("p", { class: "muted" }, "Next you'll get an invite link for the bar's manager."), form);
 }
 
 const TABS = [
   ["specials", "Specials"],
   ["menus", "Menus"],
   ["events", "Events"],
+  ["channel", "Bar Channel"],
   ["screens", "Screens"],
   ["settings", "Name & logo"],
-  ["staff", "Staff", true],
+  ["staff", "People", true],
 ];
 
 async function barPage(venueId, tab, item) {
@@ -328,15 +347,16 @@ async function barPage(venueId, tab, item) {
   let body;
   if (pages[tab]) body = await (item ? pages[tab][1] : pages[tab][0])(ctx, item);
   else if (tab === "screens") body = screensPage(ctx);
+  else if (tab === "channel") body = await channelPage(ctx);
   else if (tab === "settings") body = settingsPage(ctx);
-  else if (tab === "staff" && me.owner) body = await staffPage(ctx);
+  else if (tab === "staff" && (venue.role === "owner" || venue.role === "manager")) body = await staffPage(ctx);
   else throw Object.assign(new Error("That page doesn't exist."), { status: 404 });
 
   return h("div", null,
     h("div", { class: "bar-head" }, venue.logoUrl ? h("img", { src: venue.logoUrl, alt: "" }) : null,
       h("div", null, h("h1", null, venue.name), h("div", { class: "muted small" }, venue.timezone.replace(/_/g, " ")))),
     h("nav", { class: "tabs", "aria-label": "Bar sections" },
-      TABS.filter(([, , ownerOnly]) => !ownerOnly || me.owner).map(([key, label]) =>
+      TABS.filter(([, , managersOnly]) => !managersOnly || venue.role === "owner" || venue.role === "manager").map(([key, label]) =>
         h("a", { href: `${ctx.base}/${key}`, "aria-current": key === tab ? "page" : null }, label))),
     body);
 }
@@ -362,7 +382,7 @@ async function specialsList(ctx) {
           });
         });
         const timing = [
-          s.display === "takeover" ? "Full screen" : "Banner",
+          s.display === "picture" ? "Full-screen picture" : s.display === "takeover" ? "Full screen" : "Banner",
           s.timeoutSeconds === null ? "until it ends" : `${s.timeoutSeconds} s each time`,
           s.repeatMinutes ? `every ${s.repeatMinutes} min` : "once",
           screensText(s.screens, ctx.screens),
@@ -388,7 +408,7 @@ async function specialEditor(ctx, itemId) {
 
   const title = h("input", { type: "text", required: true, maxlength: 100, value: s.title });
   const text = h("textarea", { maxlength: 300 }, s.text || "");
-  const image = imageField(ctx.venue.id, s.image, s.imageUrl, { hint: "Optional. Shown beside the text." });
+  const image = imageField(ctx.venue.id, s.image, s.imageUrl, { hint: "Optional. Shown beside the text, or on its own for a full-screen picture." });
 
   // When
   const weekly = s.schedule.type === "weekly";
@@ -417,6 +437,7 @@ async function specialEditor(ctx, itemId) {
   const dispName = "display";
   const banner = h("input", { type: "radio", name: dispName, checked: s.display === "banner" });
   const takeover = h("input", { type: "radio", name: dispName, checked: s.display === "takeover" });
+  const picture = h("input", { type: "radio", name: dispName, checked: s.display === "picture" });
   const seconds = h("input", { type: "number", min: 5, max: 600, step: 1, value: s.timeoutSeconds ?? 30 });
   const untilEnd = h("input", { type: "checkbox", checked: s.timeoutSeconds === null && s.display === "banner" });
   const untilEndLabel = h("label", { class: "check" }, untilEnd, "Keep it up until the special ends");
@@ -428,7 +449,7 @@ async function specialEditor(ctx, itemId) {
     seconds.disabled = untilEnd.checked;
     if (!secondsTouched) seconds.value = banner.checked ? 30 : 15;
   };
-  [banner, takeover, untilEnd].forEach((x) => x.addEventListener("change", syncDisplay));
+  [banner, takeover, picture, untilEnd].forEach((x) => x.addEventListener("change", syncDisplay));
   syncDisplay();
 
   const repeat = h("input", { type: "checkbox", checked: s.repeatMinutes !== null });
@@ -453,7 +474,8 @@ async function specialEditor(ctx, itemId) {
     h("fieldset", null, h("legend", null, "On the TV"),
       h("div", { class: "choice" },
         h("label", null, banner, h("span", null, h("strong", null, "Banner"), h("span", { class: "hint" }, "Slides in along the top. The game stays visible."))),
-        h("label", null, takeover, h("span", null, h("strong", null, "Full screen"), h("span", { class: "hint" }, "Covers the picture, then goes back to the channel. Up to 10 minutes.")))),
+        h("label", null, takeover, h("span", null, h("strong", null, "Full screen"), h("span", { class: "hint" }, "Covers the picture, then goes back to the channel. Up to 10 minutes."))),
+        h("label", null, picture, h("span", null, h("strong", null, "Full-screen picture"), h("span", { class: "hint" }, "Just your uploaded image, filling the screen, like a poster. Landscape (16:9) fits a TV best.")))),
       h("div", { class: "row" }, h("span", null, "Stays up for"), seconds, h("span", null, "seconds each time")),
       untilEndLabel,
       h("label", { class: "check" }, repeat, "Show it again while the special is on, every", repeatMin, "minutes")),
@@ -472,12 +494,13 @@ async function specialEditor(ctx, itemId) {
         schedule = { type: "once", start: fromInput(oStart.value, tz), end: fromInput(oEnd.value, tz) };
         if (!schedule.start || !schedule.end) throw new Error("Enter when it starts and ends");
       }
+      if (picture.checked && !image.value()) throw new Error("Upload the picture to show full screen");
       const body = {
         title: title.value,
         text: text.value,
         image: image.value(),
         schedule,
-        display: banner.checked ? "banner" : "takeover",
+        display: banner.checked ? "banner" : picture.checked ? "picture" : "takeover",
         timeoutSeconds: untilEnd.checked ? null : Number(seconds.value),
         repeatMinutes: repeat.checked ? Number(repeatMin.value) : null,
         enabled: enabled.checked,
@@ -486,7 +509,7 @@ async function specialEditor(ctx, itemId) {
       await (isNew
         ? api("POST", `/venues/${ctx.venue.id}/specials`, body)
         : api("PUT", `/venues/${ctx.venue.id}/specials/${itemId}`, body));
-      toast("Saved. TVs pick it up within 10 minutes.");
+      toast("Saved. TVs pick it up within 2 minutes.");
       go(`${ctx.base}/specials`);
     });
   });
@@ -607,17 +630,70 @@ async function menuEditor(ctx, itemId) {
 
 // ----- events -----
 
+/** "Every Tuesday, 8:00 PM to 10:00 PM, until Mar 1" */
+function repeatText(r) {
+  const days = new Set(r.days);
+  let d;
+  if (days.size === 7) d = "Every day";
+  else if (days.size === 5 && [1, 2, 3, 4, 5].every((x) => days.has(x))) d = "Weekdays";
+  else if (days.size === 2 && days.has(0) && days.has(6)) d = "Weekends";
+  else if (days.size === 1) d = `Every ${dayName(r.days[0], "long")}`;
+  else d = "Every " + DAY_ORDER.filter((x) => days.has(x)).map((x) => dayName(x)).join(", ");
+  const time = r.end ? `${clock(r.start)} to ${clock(r.end)}${r.end <= r.start ? " (next day)" : ""}` : clock(r.start);
+  return `${d}, ${time}` + (r.until ? `, until ${dateText(r.until)}` : "");
+}
+
+/** A "YYYY-MM-DD" date as "Mar 1" (or "Mar 1, 2027" when it isn't this year). */
+function dateText(ymd) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const opts = { month: "short", day: "numeric", timeZone: "UTC", ...(y !== new Date().getFullYear() ? { year: "numeric" } : {}) };
+  return new Intl.DateTimeFormat(undefined, opts).format(Date.UTC(y, m - 1, d));
+}
+
+/** Today's date in the bar's time zone, as "YYYY-MM-DD". */
+function todayIn(tz) {
+  const p = localParts(Date.now(), tz);
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}`;
+}
+
+/** A repeating event's next start, the way the TVs work it out, or null if it has finished. */
+function nextRepeat(e, tz) {
+  const r = e.repeat;
+  const [h, m] = r.start.split(":").map(Number);
+  const end = r.end ?? `${pad(Math.floor((h * 60 + m + 1) / 60) % 24)}:${pad((m + 1) % 60)}`;
+  const now = Date.now();
+  const from = Math.max(now, e.start);
+  const to = Math.min(now + 15 * 86_400_000, e.end ?? Infinity);
+  if (from >= to) return null;
+  const o = occurrences({ type: "weekly", days: r.days, start: r.start, end }, tz, from, to)
+    .find((x) => x.start >= e.start && (e.end === null || x.start < e.end));
+  return o ? o.start : null;
+}
+
 async function eventsList(ctx) {
   const items = await api("GET", `/venues/${ctx.venue.id}/events`);
   const now = Date.now();
-  const upcoming = items.filter((e) => (e.end ?? e.start) >= now);
-  const past = items.filter((e) => (e.end ?? e.start) < now).reverse().slice(0, 10);
-  const row = (e) => h("li", null, h("a", { class: "card item item-link", href: `${ctx.base}/events/${e.id}` },
-    thumb(e.imageUrl),
-    h("div", { class: "body" },
-      h("h3", null, e.title, e.start <= now && (e.end ?? e.start) >= now ? h("span", { class: "badge ok" }, "On now") : null),
-      h("p", { class: "small" }, e.end ? `${when(e.start, ctx.tz)} to ${when(e.end, ctx.tz)}` : when(e.start, ctx.tz)),
-      h("p", { class: "muted small" }, screensText(e.screens, ctx.screens)))));
+  const finished = (e) => (e.repeat ? e.end !== null && e.end <= now : (e.end ?? e.start) < now);
+  const upcoming = items.filter((e) => !finished(e)).sort((a, b) => (a.repeat ? 0 : a.start) - (b.repeat ? 0 : b.start));
+  const past = items.filter(finished).reverse().slice(0, 10);
+  const row = (e) => {
+    let detail;
+    let badge = null;
+    if (e.repeat) {
+      const next = nextRepeat(e, ctx.tz);
+      detail = repeatText(e.repeat);
+      badge = h("span", { class: "badge" }, e.start > now ? `Starts ${dateText(e.repeat.from)}` : next ? `Next: ${when(next, ctx.tz)}` : "Repeats");
+    } else {
+      detail = e.end ? `${when(e.start, ctx.tz)} to ${when(e.end, ctx.tz)}` : when(e.start, ctx.tz);
+      if (e.start <= now && (e.end ?? e.start) >= now) badge = h("span", { class: "badge ok" }, "On now");
+    }
+    return h("li", null, h("a", { class: "card item item-link", href: `${ctx.base}/events/${e.id}` },
+      thumb(e.imageUrl),
+      h("div", { class: "body" },
+        h("h3", null, e.title, badge),
+        h("p", { class: "small" }, detail),
+        h("p", { class: "muted small" }, screensText(e.screens, ctx.screens)))));
+  };
   return h("div", null,
     h("div", { class: "row spread" },
       h("p", { class: "muted", style: "margin:0" }, "Upcoming events show on the Bar Channel."),
@@ -631,14 +707,42 @@ async function eventsList(ctx) {
 async function eventEditor(ctx, itemId) {
   const isNew = itemId === "new";
   const e = isNew
-    ? { title: "", description: "", image: null, imageUrl: null, start: null, end: null, screens: null }
+    ? { title: "", description: "", image: null, imageUrl: null, fullScreen: false, start: null, end: null, repeat: null, screens: null }
     : await api("GET", `/venues/${ctx.venue.id}/events/${itemId}`);
   const tz = ctx.tz;
+  const r = e.repeat;
   const title = h("input", { type: "text", required: true, maxlength: 100, value: e.title });
   const desc = h("textarea", { maxlength: 1000 }, e.description || "");
   const image = imageField(ctx.venue.id, e.image, e.imageUrl, { hint: "Optional. A poster or photo." });
-  const start = h("input", { type: "datetime-local", required: true, value: toInput(e.start, tz) });
-  const end = h("input", { type: "datetime-local", value: toInput(e.end, tz) });
+  const fullScreen = h("input", { type: "checkbox", checked: e.fullScreen });
+  const fullScreenLabel = h("label", { class: "check" }, fullScreen,
+    h("span", null, "Show the picture full screen on the Bar Channel ", h("span", { class: "hint" }, "Just your picture, edge to edge, with no text. Landscape (16:9) fits a TV best.")));
+
+  const typeOnce = h("input", { type: "radio", name: "event-when", checked: !r });
+  const typeWeekly = h("input", { type: "radio", name: "event-when", checked: !!r });
+
+  const start = h("input", { type: "datetime-local", value: r ? "" : toInput(e.start, tz) });
+  const end = h("input", { type: "datetime-local", value: r ? "" : toInput(e.end, tz) });
+  const onceBox = h("div", { class: "row" }, field("Starts", start), field("Ends", end, "Optional"));
+
+  const days = DAY_ORDER.map((d) => ({ d, input: h("input", { type: "checkbox", checked: r?.days.includes(d) }) }));
+  const wStart = h("input", { type: "time", value: r?.start ?? "20:00" });
+  const wEnd = h("input", { type: "time", value: r?.end ?? "" });
+  const from = h("input", { type: "date", value: r?.from ?? todayIn(tz) });
+  const until = h("input", { type: "date", value: r?.until ?? "" });
+  const weeklyBox = h("div", { style: "display:grid;gap:10px" },
+    h("div", { class: "days" }, days.map(({ d, input }) => h("label", null, input, dayName(d)))),
+    h("div", { class: "row" }, field("From", wStart), field("Until", wEnd, "Optional")),
+    h("div", { class: "row" }, field("Starting", from), field("Last date", until, "Optional. Leave empty to keep repeating.")));
+
+  const sync = () => {
+    onceBox.hidden = !typeOnce.checked;
+    weeklyBox.hidden = !typeWeekly.checked;
+  };
+  typeOnce.addEventListener("change", sync);
+  typeWeekly.addEventListener("change", sync);
+  sync();
+
   const screens = screenPicker(ctx.screens, e.screens);
   const save = h("button", { class: "primary" }, isNew ? "Add event" : "Save");
   const del = isNew ? null : h("button", { type: "button", class: "danger" }, "Delete");
@@ -646,24 +750,36 @@ async function eventEditor(ctx, itemId) {
     field("Title", title),
     field("Details", desc, "Optional."),
     image.el,
-    h("div", { class: "row" }, field("Starts", start), field("Ends", end, "Optional")),
-    h("p", { class: "hint", style: "margin:0" }, `Times are in the bar's time zone (${tz.replace(/_/g, " ")}).`),
+    fullScreenLabel,
+    h("fieldset", null, h("legend", null, "When"),
+      h("div", { class: "choice" }, h("label", null, typeOnce, "One time"), h("label", null, typeWeekly, "Repeats every week")),
+      onceBox, weeklyBox,
+      h("p", { class: "hint", style: "margin:0" }, `Times are in the bar's time zone (${tz.replace(/_/g, " ")}).`)),
     screens.el,
     h("div", { class: "form-actions" }, h("div", { class: "row" }, save, h("a", { class: "button", href: `${ctx.base}/events` }, "Cancel")), del));
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
     busy(save, async () => {
-      const body = {
-        title: title.value,
-        description: desc.value,
-        image: image.value(),
-        start: fromInput(start.value, tz),
-        end: fromInput(end.value, tz),
-        screens: screens.value(),
-      };
-      if (!body.start) throw new Error("Enter when it starts");
+      const body = { title: title.value, description: desc.value, image: image.value(), fullScreen: fullScreen.checked, screens: screens.value() };
+      if (body.fullScreen && !body.image) throw new Error("Upload a picture to show it full screen");
+      if (typeWeekly.checked) {
+        body.repeat = {
+          days: days.filter((x) => x.input.checked).map((x) => x.d),
+          start: wStart.value,
+          end: wEnd.value || null,
+          from: from.value,
+          until: until.value || null,
+        };
+        if (!body.repeat.days.length) throw new Error("Pick at least one day");
+        if (!body.repeat.start) throw new Error("Enter what time it starts");
+        if (!body.repeat.from) throw new Error("Enter the first date it happens");
+      } else {
+        body.start = fromInput(start.value, tz);
+        body.end = fromInput(end.value, tz);
+        if (!body.start) throw new Error("Enter when it starts");
+      }
       await (isNew ? api("POST", `/venues/${ctx.venue.id}/events`, body) : api("PUT", `/venues/${ctx.venue.id}/events/${itemId}`, body));
-      toast("Saved");
+      toast("Saved. TVs pick it up within 2 minutes.");
       go(`${ctx.base}/events`);
     });
   });
@@ -671,9 +787,109 @@ async function eventEditor(ctx, itemId) {
   return h("div", null, h("h2", { style: "margin-top:0" }, isNew ? "New event" : "Edit event"), form);
 }
 
+// ----- the Bar Channel -----
+
+/**
+ * What the bar's own channel shows, for all of its TVs. The preview lists the pages in the order the TVs show
+ * them, worked out the same way as on the TV, as things stand right now.
+ */
+async function channelPage(ctx) {
+  const v = ctx.venue;
+  const c = v.channel;
+  const [menus, specials, events] = await Promise.all([
+    api("GET", `/venues/${v.id}/menus`),
+    api("GET", `/venues/${v.id}/specials`),
+    api("GET", `/venues/${v.id}/events`),
+  ]);
+
+  const box = (checked) => h("input", { type: "checkbox", checked });
+  const enabled = box(c.enabled);
+  const onNow = box(c.onNow);
+  const later = box(c.later);
+  const eventsList = box(c.events);
+  const posters = box(c.posters);
+  const menuBoxes = menus.map((m) => ({ m, input: box(!c.hiddenMenus.includes(m.id)) }));
+  const seconds = h("select", { style: "width:auto" },
+    [8, 12, 20, 30].map((s) => h("option", { value: s, selected: s === c.seconds }, `${s} seconds`)));
+
+  const option = (input, title, hint) =>
+    h("label", { class: "check" }, input, h("span", null, h("strong", null, title), " ", h("span", { class: "hint" }, hint)));
+
+  const parts = h("fieldset", null, h("legend", null, "What it shows, in this order"),
+    option(onNow, "Specials on now", "A big page for each one, like Happy Hour."),
+    option(later, "Later today's specials", "One list of what's coming up today."),
+    menus.length
+      ? h("div", { style: "display:grid;gap:8px" }, h("strong", null, "Menus"),
+        h("div", { class: "days" }, menuBoxes.map(({ m, input }) => h("label", null, input, m.title))),
+        h("span", { class: "hint" }, "New menus show here, ticked, until you untick them."))
+      : h("p", { class: "hint", style: "margin:0" }, "Menus: none yet. Add them on the Menus tab."),
+    option(eventsList, "Coming up", "A list of the next few events."),
+    option(posters, "Event posters", "A page for each upcoming event with a picture."));
+
+  const preview = h("ol", { class: "page-preview" });
+
+  function drawPreview() {
+    parts.disabled = !enabled.checked;
+    seconds.disabled = !enabled.checked;
+    if (!enabled.checked) {
+      preview.replaceChildren(h("li", { class: "muted" }, "The Bar Channel is off, so it isn't in the TVs' guide."));
+      return;
+    }
+    const now = Date.now();
+    const pages = [];
+    const today = specials
+      .filter((s) => s.enabled)
+      .map((s) => ({ s, o: occurrences(s.schedule, ctx.tz, now, now + 86_400_000)[0] }))
+      .filter((x) => x.o);
+    if (onNow.checked) today.filter((x) => x.o.start <= now).forEach((x) => pages.push(`On now: ${x.s.title}`));
+    const laterToday = today.filter((x) => x.o.start > now);
+    if (later.checked && laterToday.length) pages.push(`Later today: ${laterToday.map((x) => x.s.title).join(", ")}`);
+    menuBoxes.filter((x) => x.input.checked).forEach((x) => pages.push(`Menu: ${x.m.title}`));
+    const upcoming = events.filter((e) => (e.repeat ? nextRepeat(e, ctx.tz) !== null : (e.end ?? e.start) >= now));
+    if (eventsList.checked && upcoming.length) pages.push(`Coming up: ${upcoming.slice(0, 6).map((e) => e.title).join(", ")}`);
+    if (posters.checked) upcoming.filter((e) => e.image).forEach((e) => pages.push(`Poster: ${e.title}${e.fullScreen ? " (full screen)" : ""}`));
+    if (!pages.length) pages.push("A welcome page, until there's something to show");
+    preview.replaceChildren(...pages.map((p) => h("li", null, p)));
+    const loop = pages.length * Number(seconds.value);
+    preview.append(h("li", { class: "muted", style: "list-style:none;margin-left:-20px" },
+      `Then it starts again: ${loop < 60 ? `${loop} seconds` : `about ${Math.round(loop / 60)} minute${Math.round(loop / 60) === 1 ? "" : "s"}`} all the way round.`));
+  }
+  [enabled, onNow, later, eventsList, posters, seconds, ...menuBoxes.map((x) => x.input)].forEach((el) => el.addEventListener("change", drawPreview));
+  drawPreview();
+
+  const save = h("button", { class: "primary" }, "Save");
+  const form = h("form", { class: "card" },
+    h("p", { class: "muted", style: "margin:0" },
+      `${v.displayName || v.name}'s own channel, at the top of the TVs' guide. These settings are for all of the bar's TVs.`),
+    option(enabled, "Show the Bar Channel on the TVs", "Turn it off to keep it out of the guide."),
+    parts,
+    h("label", { class: "row", style: "font-weight:600" }, "Each page stays up for", seconds),
+    h("div", null, h("strong", null, "Right now, the TVs would show:"), preview),
+    h("div", null, save));
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    busy(save, async () => {
+      await api("PATCH", `/venues/${v.id}`, {
+        channel: {
+          enabled: enabled.checked,
+          onNow: onNow.checked,
+          later: later.checked,
+          events: eventsList.checked,
+          posters: posters.checked,
+          hiddenMenus: menuBoxes.filter((x) => !x.input.checked).map((x) => x.m.id),
+          seconds: Number(seconds.value),
+        },
+      });
+      toast("Saved. TVs pick it up within 2 minutes.");
+      render();
+    });
+  });
+  return form;
+}
+
 // ----- screens -----
 
-const ONLINE_MS = 20 * 60 * 1000; // TVs check in every 10 minutes
+const ONLINE_MS = 10 * 60 * 1000; // TVs check every 2 minutes, and report in at least every 4
 
 function screensPage(ctx) {
   const code = h("input", { type: "text", class: "code-input", required: true, maxlength: 7, placeholder: "ABC-123", autocomplete: "off", autocapitalize: "characters", spellcheck: "false" });
@@ -699,6 +915,18 @@ function screensPage(ctx) {
     if (!s.linked) status = h("span", { class: "badge warn" }, "Finishing linking");
     else if (s.lastSeen && now - s.lastSeen < ONLINE_MS) status = h("span", { class: "badge ok" }, "Online");
     else status = h("span", { class: "badge" }, s.lastSeen ? `Last seen ${ago(s.lastSeen)}` : "Not seen yet");
+    const layout = h("select", { "aria-label": `Picture on ${s.name}` },
+      h("option", { value: "full", selected: s.layout !== "framed" }, "Full picture"),
+      h("option", { value: "framed", selected: s.layout === "framed" }, "Framed with bar info"));
+    layout.addEventListener("change", async () => {
+      try {
+        await api("PATCH", `/venues/${ctx.venue.id}/screens/${s.id}`, { layout: layout.value });
+        toast(layout.value === "framed" ? "Framed. The TV changes within 2 minutes." : "Full picture. The TV changes within 2 minutes.");
+      } catch (e) {
+        toast(e.message, true);
+        layout.value = s.layout;
+      }
+    });
     const rename = h("button", { class: "small" }, "Rename");
     const unlink = h("button", { class: "small danger" }, "Unlink");
     rename.addEventListener("click", () => {
@@ -710,7 +938,7 @@ function screensPage(ctx) {
       });
     });
     unlink.addEventListener("click", () => {
-      if (!confirm(`Unlink “${s.name}”? It goes back to plain OpenGuide at its next check, within 10 minutes.`)) return;
+      if (!confirm(`Unlink “${s.name}”? It goes back to plain OpenGuide at its next check, within 2 minutes.`)) return;
       busy(unlink, async () => {
         await api("DELETE", `/venues/${ctx.venue.id}/screens/${s.id}`);
         toast("Unlinked");
@@ -718,11 +946,14 @@ function screensPage(ctx) {
       });
     });
     return h("li", { class: "card item" },
-      h("div", { class: "body" }, h("h3", null, s.name, status), s.appVersion ? h("p", { class: "muted small" }, `OpenGuide ${s.appVersion}`) : null),
+      h("div", { class: "body" }, h("h3", null, s.name, status), s.appVersion ? h("p", { class: "muted small" }, `OpenGuide ${s.appVersion}`) : null,
+        h("label", { class: "layout-pick" }, "Picture: ", layout)),
       h("div", { class: "actions" }, rename, unlink));
   });
   return h("div", null, form,
     h("h2", null, "Screens"),
+    h("p", { class: "muted small", style: "margin-top:-4px" },
+      "“Framed” shrinks the channel to the top right, with your logo and upcoming events down the left and the current special along the bottom. Framed screens show specials only in that bottom bar, never as banners or full-screen takeovers."),
     list.length ? h("ul", { class: "list" }, list) : h("div", { class: "card empty" }, "No TVs linked yet."));
 }
 
@@ -734,20 +965,23 @@ function settingsPage(ctx) {
   const display = h("input", { type: "text", maxlength: 60, value: v.displayName || "", placeholder: v.name });
   const logo = imageField(v.id, v.logo, v.logoUrl, { label: "Logo", hint: "Shown on the TVs in place of OpenGuide's. A square PNG with a clear background works best." });
   const tz = timeZoneSelect(v.timezone);
+  const colors = colorPicker(v.theme, () => display.value || v.displayName || v.name);
   const save = h("button", { class: "primary" }, "Save");
   const form = h("form", { class: "card" },
     name ? field("Bar name", name, "Only you, the site owner, can change this.") : null,
     field("Name on TVs", display, "Shown on the TVs in place of OpenGuide. Leave empty to use the bar name."),
     logo.el,
+    colors.el,
     field("Time zone", tz, "Specials and events run on this clock."),
     h("div", null, save));
+  display.addEventListener("input", colors.redraw);
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
     busy(save, async () => {
-      const body = { displayName: display.value, logo: logo.value(), timezone: tz.value };
+      const body = { displayName: display.value, logo: logo.value(), timezone: tz.value, theme: colors.value() };
       if (name) body.name = name.value;
       await api("PATCH", `/venues/${v.id}`, body);
-      toast("Saved. TVs pick it up within 10 minutes.");
+      toast("Saved. TVs pick it up within 2 minutes.");
       render();
     });
   });
@@ -768,40 +1002,380 @@ function settingsPage(ctx) {
       h("p", { class: "muted" }, "Removes everything for this bar. Its TVs go back to plain OpenGuide."), del));
 }
 
-// ----- staff -----
+/**
+ * Colors for the TVs: OpenGuide's own, a ready-made theme, or two colors of the bar's choosing. The app works out
+ * every shade from those two and keeps text readable, so there's nothing here that can make the TVs unreadable.
+ */
+function colorPicker(current, barName) {
+  const DEFAULT = { primary: "#0a1024", secondary: "#ffb300" };
+  const choices = [{ name: "OpenGuide", theme: null }, ...PRESETS.map((p) => ({ name: p.name, theme: { primary: p.primary, secondary: p.secondary } }))];
+  const same = (a, b) => (a === null && b === null) || (a && b && a.primary === b.primary && a.secondary === b.secondary);
+  let theme = current;
+  // Custom is a mode of its own, chosen by its button, so two custom colors that happen to match a theme
+  // don't snap back to that theme and hide the pickers.
+  let customMode = current !== null && !choices.some((c) => same(c.theme, current));
+  const isCustom = () => customMode;
 
-async function staffPage(ctx) {
-  const staff = await api("GET", `/venues/${ctx.venue.id}/staff`);
-  const email = h("input", { type: "email", required: true, maxlength: 254, placeholder: "name@example.com" });
-  const add = h("button", { class: "primary" }, "Add");
-  const form = h("form", { class: "card" },
-    h("h3", null, "Add staff"),
-    h("p", { class: "muted", style: "margin:0" },
-      "Staff can change this bar's specials, menus, events, screens, name on TVs and logo. ",
-      "They must also be allowed in your Cloudflare Access policy, or they won't be able to sign in."),
-    h("div", { class: "row" }, h("div", { style: "flex:1;min-width:220px" }, email), add));
+  const swatches = h("div", { class: "swatches", role: "radiogroup", "aria-label": "Color theme" });
+  const primary = h("input", { type: "color", value: (current || DEFAULT).primary });
+  const secondary = h("input", { type: "color", value: (current || DEFAULT).secondary });
+  const custom = h("div", { class: "row custom-colors" },
+    h("label", { class: "field" }, "Main color", h("span", { class: "hint" }, "Backgrounds"), primary),
+    h("label", { class: "field" }, "Highlight color", h("span", { class: "hint" }, "Titles, prices, selection"), secondary));
+  const preview = h("div", { class: "tv-preview", "aria-hidden": "true" });
+
+  function swatch(label, t, onPick) {
+    const d = deriveTheme((t || DEFAULT).primary, (t || DEFAULT).secondary);
+    const b = h("button", { type: "button", class: "swatch", role: "radio" },
+      h("span", { class: "chip", style: `background:${d.bg};border-color:${d.accent}` }, h("span", { style: `background:${d.accent}` })),
+      label);
+    b.addEventListener("click", onPick);
+    return b;
+  }
+
+  function draw() {
+    swatches.replaceChildren(
+      ...choices.map((c) => {
+        const b = swatch(c.name, c.theme, () => {
+          theme = c.theme;
+          customMode = false;
+          draw();
+        });
+        b.setAttribute("aria-checked", String(!isCustom() && same(c.theme, theme)));
+        return b;
+      }),
+      (() => {
+        const b = swatch("Custom", { primary: primary.value, secondary: secondary.value }, () => {
+          if (!customMode) {
+            // Start from the theme that was selected, so the pickers show where things stand.
+            const start = theme || DEFAULT;
+            primary.value = start.primary;
+            secondary.value = start.secondary;
+          }
+          customMode = true;
+          theme = { primary: primary.value, secondary: secondary.value };
+          draw();
+          primary.focus();
+        });
+        b.setAttribute("aria-checked", String(isCustom()));
+        return b;
+      })(),
+    );
+    custom.hidden = !isCustom();
+    drawPreview();
+  }
+
+  function drawPreview() {
+    const d = deriveTheme((theme || DEFAULT).primary, (theme || DEFAULT).secondary);
+    const cell = (text, bg, color = d.text) => h("span", { style: `background:${bg};color:${color}` }, text);
+    preview.style.background = d.bg;
+    preview.replaceChildren(
+      h("div", { class: "tvp-top" }, h("b", { style: `color:${d.accent}` }, barName()),
+        h("span", { style: `background:${d.accent};color:${d.onAccent}` }, "Guide"), h("span", { style: `color:${d.text}` }, "Channels"),
+        h("span", { style: `color:${d.muted};margin-left:auto` }, "8:30 PM")),
+      h("div", { class: "tvp-hero" }, h("small", { style: `color:${d.accent}` }, "4  Sports Live"),
+        h("strong", { style: `color:${d.text}` }, "Championship Game"), h("small", { style: `color:${d.muted}` }, "8:00 – 11:00 PM · 2h 30m left")),
+      h("div", { class: "tvp-grid", style: `background:${d.header}` },
+        cell("Sports Live", d.panel), cell("Championship Game", d.cellNow), cell("Post-game", d.cell),
+        cell("News 24", d.panel), cell("Evening News", d.cell), cell("No listings", d.cellEmpty, d.muted)),
+      h("div", { class: "tvp-banner", style: `background:${d.panel};border-color:${d.accent}` },
+        h("small", { style: `color:${d.accent}` }, barName()), h("strong", { style: `color:${d.text}` }, "Happy Hour"),
+        h("small", { style: `color:${d.text}` }, "$3 drafts until 7 PM")),
+    );
+  }
+
+  const pickCustom = () => {
+    customMode = true;
+    theme = { primary: primary.value, secondary: secondary.value };
+    draw();
+  };
+  primary.addEventListener("input", pickCustom);
+  secondary.addEventListener("input", pickCustom);
+  draw();
+
+  return {
+    el: h("fieldset", null, h("legend", null, "Colors on the TVs"),
+      h("p", { class: "hint", style: "margin:0" }, "Pick a theme, or choose your own two colors. The TVs work out every shade from them and always keep text easy to read."),
+      swatches, custom, preview,
+      h("p", { class: "hint", style: "margin:0" }, "A TV restarts its picture for a moment when its colors change. CRT TV mode keeps its own colors.")),
+    value: () => theme,
+    redraw: drawPreview,
+  };
+}
+
+// ----- signing in, setup, invites and resets -----
+
+const MIN_PASSWORD = 10;
+
+/** Calls /api/auth, which works without being signed in. */
+async function auth(method, path, body) {
+  const res = await fetch(`/api/auth${path}`, {
+    method,
+    credentials: "same-origin",
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* not JSON */
+  }
+  if (!res.ok) throw Object.assign(new Error(data?.error || `Request failed (${res.status})`), { status: res.status });
+  return data;
+}
+
+function signedIn(user) {
+  me = user;
+  showWho();
+}
+
+function showWho() {
+  const who = document.getElementById("who");
+  who.replaceChildren(...(me ? [h("span", null, me.name || me.email), h("a", { href: "#/account" }, "Account")] : []));
+}
+
+function authCard(title, intro, ...body) {
+  return h("div", { class: "auth" }, h("h1", null, title), intro ? h("p", { class: "muted" }, intro) : null, ...body);
+}
+
+function passwordPair(label = "Password") {
+  const pw = h("input", { type: "password", required: true, minlength: MIN_PASSWORD, maxlength: 200, autocomplete: "new-password" });
+  const again = h("input", { type: "password", required: true, minlength: MIN_PASSWORD, maxlength: 200, autocomplete: "new-password" });
+  return {
+    els: [field(label, pw, `At least ${MIN_PASSWORD} characters. A short sentence is easy to remember and hard to guess.`), field("Type it again", again)],
+    value() {
+      if (pw.value.length < MIN_PASSWORD) throw new Error(`Use a password of at least ${MIN_PASSWORD} characters`);
+      if (pw.value !== again.value) throw new Error("The two passwords don't match");
+      return pw.value;
+    },
+  };
+}
+
+/** Where to go after signing in: the page that asked for it, or the bars list. */
+let afterSignIn = "#/";
+
+function loginPage() {
+  const email = h("input", { type: "email", required: true, autocomplete: "username", maxlength: 254 });
+  const pw = h("input", { type: "password", required: true, autocomplete: "current-password", maxlength: 200 });
+  const go_ = h("button", { class: "primary" }, "Sign in");
+  const form = h("form", { class: "card" }, field("Email", email), field("Password", pw), h("div", null, go_));
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
-    busy(add, async () => {
-      await api("POST", `/venues/${ctx.venue.id}/staff`, { email: email.value });
-      toast("Added");
-      render();
+    busy(go_, async () => {
+      signedIn(await auth("POST", "/login", { email: email.value, password: pw.value }));
+      const target = afterSignIn;
+      afterSignIn = "#/";
+      go(target === "#/login" ? "#/" : target);
     });
   });
-  const list = staff.map((s) => {
-    const remove = h("button", { class: "small danger" }, "Remove");
-    remove.addEventListener("click", () => {
-      if (!confirm(`Remove ${s.email} from ${ctx.venue.name}?`)) return;
-      busy(remove, async () => {
-        await api("DELETE", `/venues/${ctx.venue.id}/staff/${encodeURIComponent(s.email)}`);
-        render();
+  setTimeout(() => email.focus(), 0);
+  return authCard("Sign in", "Manage your bar's specials, menus, events and TVs.", form,
+    h("p", { class: "muted small" }, "Forgot your password? Ask your bar's manager or the site owner for a reset link."),
+    h("p", { class: "muted small" }, "Setting up this site for the first time? ", h("a", { href: "#/setup" }, "Create the owner account")));
+}
+
+async function setupPage() {
+  const status = await auth("GET", "/setup");
+  const code = h("input", { type: "password", required: true, autocomplete: "off" });
+  const name = h("input", { type: "text", maxlength: 80, autocomplete: "name" });
+  const email = h("input", { type: "email", required: true, maxlength: 254, autocomplete: "username" });
+  const pw = passwordPair(status.needed ? "Password" : "New password");
+  const save = h("button", { class: "primary" }, status.needed ? "Create owner account" : "Set new password");
+  const form = h("form", { class: "card" },
+    field("Setup code", code, "The SETUP_CODE secret set when the site was deployed."),
+    status.needed ? field("Your name", name) : null,
+    field(status.needed ? "Email" : "Owner's email", email),
+    ...pw.els,
+    h("div", null, save));
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    busy(save, async () => {
+      signedIn(await auth("POST", "/setup", { code: code.value, name: name.value, email: email.value, password: pw.value() }));
+      toast(status.needed ? "Owner account created" : "Password changed");
+      go("#/");
+    });
+  });
+  return status.needed
+    ? authCard("Set up OpenGuide Bar", "Create the owner account. The owner sees and manages every bar, and invites each bar's manager.", form)
+    : authCard("Reset the owner's password", "Setup is done. If you're the owner and forgot your password, the setup code lets you set a new one.", form,
+      h("p", { class: "muted small" }, h("a", { href: "#/login" }, "Back to sign in")));
+}
+
+async function joinPage(token) {
+  const invite = await auth("GET", `/invite/${encodeURIComponent(token)}`);
+  const isNew = h("input", { type: "radio", name: "join-who", checked: true });
+  const hasAccount = h("input", { type: "radio", name: "join-who" });
+  const name = h("input", { type: "text", maxlength: 80, autocomplete: "name" });
+  const email = h("input", { type: "email", required: true, maxlength: 254, autocomplete: "username" });
+  const pw = passwordPair();
+  const current = h("input", { type: "password", maxlength: 200, autocomplete: "current-password" });
+  const newFields = h("div", { style: "display:grid;gap:16px" }, field("Your name", name), ...pw.els);
+  const existingFields = field("Your password", current);
+  const sync = () => {
+    newFields.hidden = !isNew.checked;
+    existingFields.hidden = isNew.checked;
+  };
+  isNew.addEventListener("change", sync);
+  hasAccount.addEventListener("change", sync);
+  sync();
+  const save = h("button", { class: "primary" }, "Join");
+  const form = h("form", { class: "card" },
+    h("div", { class: "choice" }, h("label", null, isNew, "I'm new here"), h("label", null, hasAccount, "I already have an account")),
+    field("Email", email), newFields, existingFields, h("div", null, save));
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    busy(save, async () => {
+      const body = isNew.checked
+        ? { name: name.value, email: email.value, password: pw.value() }
+        : { email: email.value, password: current.value };
+      const user = await auth("POST", `/invite/${encodeURIComponent(token)}`, body);
+      signedIn(user);
+      toast(`Welcome to ${invite.bar}`);
+      go(`#/bar/${user.venueId}/specials`);
+    });
+  });
+  const roleText = invite.role === "manager"
+    ? "As its manager, you can change its specials, menus, events and TVs, and invite your staff."
+    : "You'll be able to change its specials, menus, events and TVs.";
+  return authCard(`Join ${invite.bar}`, roleText, form);
+}
+
+async function resetPage(token) {
+  const info = await auth("GET", `/reset/${encodeURIComponent(token)}`);
+  const pw = passwordPair("New password");
+  const save = h("button", { class: "primary" }, "Set password");
+  const form = h("form", { class: "card" }, ...pw.els, h("div", null, save));
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    busy(save, async () => {
+      signedIn(await auth("POST", `/reset/${encodeURIComponent(token)}`, { password: pw.value() }));
+      toast("Password changed. You're signed in.");
+      go("#/");
+    });
+  });
+  return authCard("Choose a new password", `For ${info.email}. This also signs you out on any other devices.`, form);
+}
+
+function accountPage() {
+  const current = h("input", { type: "password", required: true, autocomplete: "current-password", maxlength: 200 });
+  const pw = passwordPair("New password");
+  const save = h("button", { class: "primary" }, "Change password");
+  const form = h("form", { class: "card" }, field("Current password", current), ...pw.els, h("div", null, save));
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    busy(save, async () => {
+      await api("POST", "/account/password", { current: current.value, password: pw.value() });
+      toast("Password changed. Other devices have been signed out.");
+      form.reset();
+    });
+  });
+  const out = h("button", { type: "button" }, "Sign out");
+  out.addEventListener("click", () => busy(out, async () => {
+    await auth("POST", "/logout");
+    me = null;
+    showWho();
+    go("#/login");
+  }));
+  return h("div", null,
+    h("h1", null, "Your account"),
+    h("p", { class: "muted" }, `${me.name ? `${me.name}, ` : ""}${me.email}${me.owner ? " · site owner" : ""}`),
+    h("h2", null, "Change password"), form,
+    h("h2", null, "Sign out"), h("div", { class: "card row spread" }, h("span", { class: "muted" }, "Sign out of this browser."), out));
+}
+
+// ----- a bar's people -----
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("Link copied");
+  } catch {
+    toast("Select the link and copy it", true);
+  }
+}
+
+/** Shows a one-time link to pass on, with a copy button. */
+function linkBox(title, link, note) {
+  const input = h("input", { type: "text", value: link, readonly: true, onclick: (e) => e.target.select() });
+  return h("div", { class: "card link-box" }, h("h3", null, title), h("p", { class: "muted small", style: "margin:0" }, note),
+    h("div", { class: "row" }, h("div", { style: "flex:1;min-width:200px" }, input), h("button", { type: "button", class: "primary", onclick: () => copyText(link) }, "Copy")));
+}
+
+async function staffPage(ctx) {
+  const data = await api("GET", `/venues/${ctx.venue.id}/staff`);
+  const isOwner = ctx.venue.role === "owner";
+  const fresh = h("div");
+
+  async function invite(role, button) {
+    await busy(button, async () => {
+      const r = await api("POST", `/venues/${ctx.venue.id}/invites`, { role });
+      fresh.replaceChildren(linkBox(`Invite link for a new ${role}`, r.link,
+        `Send this to them by text or email. It works once, for ${Math.round((r.expiresAt - Date.now()) / 86_400_000)} days. ` +
+          "Anyone with the link can join, so only send it to the person it's for."));
+    });
+  }
+  const inviteStaff = h("button", { type: "button", class: "primary" }, "Invite staff");
+  inviteStaff.addEventListener("click", () => invite("staff", inviteStaff));
+  const inviteManager = isOwner ? h("button", { type: "button" }, "Invite a manager") : null;
+  inviteManager?.addEventListener("click", () => invite("manager", inviteManager));
+
+  const members = data.members.map((m) => {
+    const canChange = isOwner || m.role !== "manager";
+    const isMe = m.email === me.email;
+    const actions = [];
+    if (canChange && !isMe && m.hasAccount) {
+      const reset = h("button", { class: "small" }, "Password reset link");
+      reset.addEventListener("click", () => busy(reset, async () => {
+        const r = await api("POST", `/venues/${ctx.venue.id}/staff/${encodeURIComponent(m.email)}/reset`);
+        fresh.replaceChildren(linkBox(`Password reset link for ${m.email}`, r.link,
+          `Send this only to ${m.email}. It works once, for ${Math.round((r.expiresAt - Date.now()) / 86_400_000)} days, and signs them out everywhere.`));
+        fresh.scrollIntoView({ behavior: "smooth", block: "center" });
+      }));
+      actions.push(reset);
+    }
+    if (canChange && !isMe) {
+      const remove = h("button", { class: "small danger" }, "Remove");
+      remove.addEventListener("click", () => {
+        if (!confirm(`Remove ${m.email} from ${ctx.venue.name}? They won't be able to manage it any more.`)) return;
+        busy(remove, async () => {
+          await api("DELETE", `/venues/${ctx.venue.id}/staff/${encodeURIComponent(m.email)}`);
+          toast("Removed");
+          render();
+        });
       });
-    });
-    return h("li", { class: "card item" }, h("div", { class: "body" }, h("h3", null, s.email), h("p", { class: "muted small" }, `Added ${ago(s.addedAt)}`)),
-      h("div", { class: "actions" }, remove));
+      actions.push(remove);
+    }
+    return h("li", { class: "card item" },
+      h("div", { class: "body" },
+        h("h3", null, m.name || m.email, h("span", { class: `badge ${m.role === "manager" ? "ok" : ""}` }, m.role === "manager" ? "Manager" : "Staff"), isMe ? h("span", { class: "badge" }, "You") : null),
+        h("p", { class: "muted small" }, m.name ? m.email : `Added ${ago(m.addedAt)}`)),
+      h("div", { class: "actions" }, actions));
   });
-  return h("div", null, form, h("h2", null, "Staff"),
-    list.length ? h("ul", { class: "list" }, list) : h("div", { class: "card empty" }, "No staff yet. You can manage this bar yourself."));
+
+  const invites = data.invites.map((i) => {
+    const cancel = h("button", { class: "small danger" }, "Cancel");
+    cancel.addEventListener("click", () => busy(cancel, async () => {
+      await api("DELETE", `/venues/${ctx.venue.id}/invites/${i.id}`);
+      render();
+    }));
+    return h("li", { class: "card item" },
+      h("div", { class: "body" }, h("h3", null, `Invite for ${i.role === "manager" ? "a manager" : "staff"}`),
+        h("p", { class: "muted small" }, `Made by ${i.createdBy} ${ago(i.createdAt)}, unused. Expires ${when(i.expiresAt, ctx.tz)}.`)),
+      h("div", { class: "actions" }, cancel));
+  });
+
+  return h("div", null,
+    h("div", { class: "card", style: "display:grid;gap:10px" },
+      h("h3", null, "Invite someone"),
+      h("p", { class: "muted", style: "margin:0" },
+        "Staff can change this bar's specials, menus, events, TVs, name and logo. ",
+        isOwner ? "Managers can also invite and remove staff, and make password reset links for them." : "Only the site owner can add managers."),
+      h("div", { class: "row" }, inviteStaff, inviteManager)),
+    fresh,
+    h("h2", null, "People"),
+    members.length ? h("ul", { class: "list" }, members) : h("div", { class: "card empty" }, isOwner ? "Nobody yet. Invite the bar's manager to get started." : "Nobody yet."),
+    invites.length ? [h("h2", null, "Unused invites"), h("ul", { class: "list" }, invites)] : null);
 }
 
 window.addEventListener("hashchange", render);

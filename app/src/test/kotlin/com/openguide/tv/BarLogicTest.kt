@@ -110,6 +110,33 @@ class BarLogicTest {
         assertEquals(listOf(Occurrence(5, 9)), s.occurrences)
     }
 
+    @Test fun parsesPictureSpecials() {
+        val base = """{"version":1,"venue":{"name":"X","logo":null,"timezone":"UTC"},"screen":{"id":"s","name":"A"},"menus":[],"events":[],
+            "specials":[{"id":"p","title":"Poster","text":null,"image":IMG,"display":"picture","timeoutSeconds":15,"repeatMinutes":null,"occurrences":[]}]}"""
+        val s = parseBarFeed(base.replace("IMG", "\"http://x/p.png\"")).specials[0]
+        assertTrue(s.takeover)
+        assertTrue(s.pictureOnly)
+        // Without its picture it falls back to an ordinary takeover, rather than an empty screen.
+        val noImage = parseBarFeed(base.replace("IMG", "null")).specials[0]
+        assertTrue(noImage.takeover)
+        assertFalse(noImage.pictureOnly)
+    }
+
+    @Test fun parsesFullScreenEvents() {
+        val json = """{"version":1,"venue":{"name":"X","logo":null,"timezone":"UTC"},"screen":{"id":"s","name":"A"},"menus":[],"specials":[],
+            "events":[{"id":"a","title":"Gig","description":null,"image":"http://x/a.png","fullScreen":true,"start":1,"end":null},
+                      {"id":"b","title":"No picture","description":null,"image":null,"fullScreen":true,"start":2,"end":null},
+                      {"id":"c","title":"Older server","description":null,"image":"http://x/c.png","start":3,"end":null}]}"""
+        assertEquals(listOf(true, false, false), parseBarFeed(json).events.map { it.fullScreen })
+    }
+
+    @Test fun parsesBarChannelSettings() {
+        val base = """{"version":1,"venue":{"name":"X","logo":null,"timezone":"UTC"CHANNEL},"screen":{"id":"s","name":"A"},"menus":[],"events":[],"specials":[]}"""
+        assertEquals(BarChannelSettings(), parseBarFeed(base.replace("CHANNEL", "")).channel)
+        val c = parseBarFeed(base.replace("CHANNEL", ""","channel":{"enabled":false,"onNow":true,"later":false,"events":true,"posters":false,"hiddenMenus":["m1"],"seconds":20}""")).channel
+        assertEquals(BarChannelSettings(enabled = false, later = false, posters = false, hiddenMenus = setOf("m1"), seconds = 20), c)
+    }
+
     @Test fun barChannelIsVirtual() {
         assertTrue(isVirtualChannel(BAR_CHANNEL_ID))
         assertTrue(isVirtualChannel(GUIDE_CHANNEL_ID))

@@ -12,12 +12,12 @@ val keystoreProps = rootProject.file("keystore.properties").takeIf { it.exists()
 }
 
 // The release tag on GitHub must match this, with a leading "v", for the in-app update check.
-val appVersion = providers.gradleProperty("appVersion").getOrElse("1.4.0")
+val appVersion = providers.gradleProperty("appVersion").getOrElse("1.4.1")
 val updateApi = providers.gradleProperty("updateApi")
     .getOrElse("https://api.github.com/repos/zapiltar/OpenGuide/releases/latest")
-// Bar Mode's server (server/ in this repo). Empty hides Bar Mode. For an emulator against `npm run dev`,
-// build with -PbarApi=http://10.0.2.2:8787
-val barApi = providers.gradleProperty("barApi").getOrElse("")
+// Bar Mode's server (server/ in this repo). -PbarApi= (empty) hides Bar Mode. To test against `npm run dev`,
+// build with -PbarApi=http://<this PC's address>:8787 (or http://10.0.2.2:8787 from an emulator).
+val barApi = providers.gradleProperty("barApi").getOrElse("https://openguide-bar.openguide-bar-server.workers.dev")
 
 android {
     namespace = "com.openguide.tv"

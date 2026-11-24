@@ -17,6 +17,8 @@ import android.util.LruCache
 import android.view.Gravity
 import android.view.View
 import android.widget.TextView
+import com.openguide.tv.data.BarTheme
+import com.openguide.tv.data.deriveTheme
 import coil.ImageLoader
 import coil.request.ImageRequest
 import coil.size.Precision
@@ -44,7 +46,7 @@ object Palette {
      * The CRT colours are flat and a little short of full strength, because saturated reds and thin
      * lines smear and crawl over composite video.
      */
-    fun use(crt: Boolean) {
+    fun use(crt: Boolean, theme: BarTheme? = null) {
         fun c(modern: String, tube: String) = Color.parseColor(if (crt) tube else modern)
         BG = c("#0A1024", "#00002C")
         PANEL = c("#141C3A", "#14288C")
@@ -59,6 +61,13 @@ object Palette {
         FAINT = c("#66729A", "#8494D4")
         BAD = c("#FF8A80", "#FFA888")
         BANNER = c("#E60A1024", "#F000003C")
+        // A linked bar's colors. CRT mode keeps its own, which are tuned for composite video.
+        if (theme != null && !crt) {
+            val t = deriveTheme(theme)
+            BG = t.bg; HEADER = t.header; CELL_EMPTY = t.cellEmpty; PANEL = t.panel; CELL = t.cell; CELL_NOW = t.cellNow
+            ACCENT = t.accent; ON_ACCENT = t.onAccent; TEXT = t.text; MUTED = t.muted; FAINT = t.faint
+            BANNER = (0xE6 shl 24) or (t.bg and 0xFFFFFF)
+        }
     }
 }
 
@@ -75,10 +84,14 @@ object Look {
     /** Thin strokes shimmer on a tube, so CRT mode has no light weight. */
     val plainFace: Typeface get() = if (crt) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
 
-    fun use(crt: Boolean, squeezed: Boolean, frameAspect: Float) {
+    /** The bar colors the current views were built with, so a change can rebuild them. */
+    var theme: BarTheme? = null; private set
+
+    fun use(crt: Boolean, squeezed: Boolean, frameAspect: Float, theme: BarTheme? = null) {
         this.crt = crt
+        this.theme = theme
         textScaleX = if (crt && squeezed) (frameAspect / (4f / 3f)).coerceAtLeast(1f) else 1f
-        Palette.use(crt)
+        Palette.use(crt, theme)
     }
 }
 
