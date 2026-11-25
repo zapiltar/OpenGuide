@@ -171,6 +171,10 @@ class Repo(ctx: Context) {
         private set
     @Volatile var numbers: Map<String, Int> = emptyMap()
         private set
+
+    /** The channel's number as shown on screen: "B" for Bingo, or null for a channel with no number. */
+    fun numberLabel(id: String): String? = if (id == BINGO_CHANNEL_ID) "B" else numbers[id]?.toString()
+
     /** Channels none of whose sources work. Kept between launches so they stay hidden from the start. */
     @Volatile var deadChannels: Set<String> = prefs.deadChannels
         private set

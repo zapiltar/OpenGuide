@@ -59,6 +59,7 @@ import com.openguide.tv.data.Programme
 import com.openguide.tv.data.REGION_WORLD
 import com.openguide.tv.data.Release
 import com.openguide.tv.data.Repo
+import com.openguide.tv.data.UpdateInstaller
 import com.openguide.tv.data.Updater
 import com.openguide.tv.data.croppedAspect
 import com.openguide.tv.data.crtVideoSize
@@ -78,6 +79,9 @@ import java.io.IOException
 import java.util.Date
 
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+
+/** Whether this run of the app has already checked for an update at startup. */
+private var startupCheckDone = false
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
 private enum class Screen { LOADING, GUIDE, BROWSER, SETTINGS, FULLSCREEN }
@@ -93,6 +97,10 @@ class MainActivity : Activity() {
     private val logos by lazy { Logos(this, repo.http) }
     private val listings by lazy { Listings(repo, scope) { onListingsLoaded() } }
     private val updater by lazy { Updater(this, repo.http) }
+    private val installer by lazy { UpdateInstaller(this, ::onInstallResult) }
+    /** A short message along the top, like "an update is available", that goes away by itself. */
+    private lateinit var notice: TextView
+    private val hideNotice = Runnable { notice.animate().alpha(0f).setDuration(400).withEndAction { notice.visibility = View.GONE }.start() }
     private val bar: BarMode by lazy { (application as OpenGuideApp).bar }
     private val barImages by lazy { BarImages(this, repo.http) }
     private val prefs get() = repo.prefs
@@ -209,6 +217,7 @@ class MainActivity : Activity() {
         reopenFullscreen = savedInstanceState?.getBoolean(KEY_FULLSCREEN) == true
         Look.use(prefs.crtMode, prefs.crtSqueezed, frameW.toFloat() / frameH, bar.feed.value?.venue?.theme)
         buildUi()
+        installer.register()
         setContentView(root)
         startLoading()
     }
@@ -338,6 +347,16 @@ class MainActivity : Activity() {
 
         barLink = BarLinkPanel(this)
         root.addView(barLink, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        notice = label(size = 18f, bold = true, lines = 3).apply {
+            background = roundRect(Palette.PANEL, dpf(10f), Palette.ACCENT, dp(2))
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+        }
+        root.addView(notice, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+            topMargin = dp(28)
+        })
         applyOverscan()
     }
 
@@ -598,6 +617,7 @@ class MainActivity : Activity() {
         }
         showGuide(focus = true)
         guide.selectChannel(repo.prefs.lastChannel)
+        checkForUpdateAtStart()
         if (reopenSettings) {
             reopenSettings = false
             showSettings(focus = false)
@@ -758,7 +778,7 @@ class MainActivity : Activity() {
             heroProgress.visibility = View.INVISIBLE
             return
         }
-        heroChannel.text = "${repo.numbers[ch.id] ?: ""}  ${ch.name}"
+        heroChannel.text = "${repo.numberLabel(ch.id) ?: ""}  ${ch.name}"
         if (ch.id == BAR_CHANNEL_ID) {
             heroTitle.text = ch.name
             heroTime.text = "Menus, events and specials"
@@ -973,6 +993,37 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Once each time the app starts, checks quietly for a newer version and, if there is one, says so for a few
+     * seconds. Nothing is downloaded until someone chooses Check for updates in Settings.
+     */
+    private fun checkForUpdateAtStart() {
+        if (startupCheckDone) return
+        startupCheckDone = true
+        scope.launch {
+            delay(4_000)
+            val release = try {
+                withContext(Dispatchers.IO) { updater.latestIfNewer() }
+            } catch (e: IOException) {
+                android.util.Log.i("Update", "Startup check failed", e)
+                null
+            } ?: return@launch
+            val version = release.version.removePrefix("v")
+            settings.setUpdateText("Version $version is available. Press to install it")
+            showNotice("OpenGuide $version is available\nTo install it, open Settings and choose Check for updates")
+        }
+    }
+
+    private fun showNotice(text: String) {
+        notice.text = text
+        notice.removeCallbacks(hideNotice)
+        notice.animate().cancel()
+        notice.alpha = 0f
+        notice.visibility = View.VISIBLE
+        notice.animate().alpha(1f).setDuration(300).start()
+        notice.postDelayed(hideNotice, NOTICE_MS)
+    }
+
     private fun downloadUpdate(release: Release) {
         if (updateBusy) return
         updateBusy = true
@@ -1007,6 +1058,26 @@ class MainActivity : Activity() {
             }
             return
         }
+        settings.setUpdateText("Installing…")
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) { installer.install(file) }
+            } catch (e: Exception) {
+                android.util.Log.w("Update", "Install session failed; opening the APK instead", e)
+                settings.setUpdateText(null)
+                openApk(file)
+            }
+        }
+    }
+
+    /** What happened to an install: null when it worked (though the app is usually replaced before this). */
+    private fun onInstallResult(error: String?) {
+        settings.setUpdateText(error)
+        if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+    }
+
+    /** The old way to install: hand the APK to the system's installer app. */
+    private fun openApk(file: File) {
         val uri = if (Build.VERSION.SDK_INT >= 24) FileProvider.getUriForFile(this, "$packageName.updates", file) else Uri.fromFile(file)
         try {
             startActivity(
@@ -1139,13 +1210,13 @@ class MainActivity : Activity() {
         banner.removeCallbacks(hideBanner)
         if (Look.crt) {
             val failed = player?.state is TuneState.Failed
-            crtNumber.text = (repo.numbers[ch.id]?.toString() ?: "--") + if (failed) "  NO SIGNAL" else ""
+            crtNumber.text = (repo.numberLabel(ch.id) ?: "--") + if (failed) "  NO SIGNAL" else ""
             crtNumber.visibility = View.VISIBLE
             if (!persist) banner.postDelayed(hideBanner, 4000)
             return
         }
         banner.visibility = View.VISIBLE
-        bannerChannel.text = "${repo.numbers[ch.id] ?: ""}  ${ch.name}" + if (ch.id in repo.favorites.value) "  ★" else ""
+        bannerChannel.text = "${repo.numberLabel(ch.id) ?: ""}  ${ch.name}" + if (ch.id in repo.favorites.value) "  ★" else ""
         val channelKeys = if (prefs.dpadChangesChannel) "Up/Down" else "Channel +/-"
         bannerHint.text = "$channelKeys: change channel   ·   Left: last channel   ·   Right or hold OK: options   ·   Back: guide"
         bannerLogo.tag = ch.id
@@ -1259,15 +1330,20 @@ class MainActivity : Activity() {
         if (isVirtualChannel(ch.id)) {
             // No stream, so no picture or source settings, and it's on every list it can be on.
             val items = buildList {
-                if (ch.id == BINGO_CHANNEL_ID) addAll(bingoItems())
-                previous?.let { add(PickerItem("prev", "Last channel: ${it.name}")) }
-                barItem?.let(::add)
+                if (ch.id == BINGO_CHANNEL_ID) {
+                    addAll(bingoItems())
+                } else {
+                    previous?.let { add(PickerItem("prev", "Last channel: ${it.name}")) }
+                    barItem?.let(::add)
+                }
+                add(PickerItem("settings", "Settings"))
             }
             if (items.isNotEmpty()) {
                 picker.show(ch.name, items, null, focus = items.first().id) {
                     when (it.id) {
                         "prev" -> goToPreviousChannel()
                         "bar" -> getBarChanges()
+                        "settings" -> showSettings(focus = true)
                         else -> bingoChoice(it.id)
                     }
                 }
@@ -1288,6 +1364,7 @@ class MainActivity : Activity() {
             bar.feed.value?.takeIf { !Look.crt }?.let { f -> add(PickerItem("layout", "Picture: ${f.layout.label}")) }
             barItem?.let(::add)
             ch.streams.forEachIndexed { i, s -> add(PickerItem("src$i", "Source ${i + 1}: ${s.label}")) }
+            add(PickerItem("settings", "Settings"))
         }
         val playing = (player?.state as? TuneState.Playing)?.stream
         val current = playing?.let { "src${ch.streams.indexOf(it)}" }
@@ -1301,6 +1378,7 @@ class MainActivity : Activity() {
                 "prev" -> goToPreviousChannel()
                 "bar" -> getBarChanges()
                 "layout" -> pickLayout()
+                "settings" -> showSettings(focus = true)
                 current -> {} // already playing this source, so don't restart it
                 else -> tune(ch, ch.streams[item.id.removePrefix("src").toInt()])
             }
@@ -1512,6 +1590,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        installer.unregister()
         scope.cancel()
     }
 
@@ -1771,6 +1850,7 @@ class MainActivity : Activity() {
         const val KEY_FULLSCREEN = "fullscreen"
         const val MAX_OVERSCAN = 20
         const val GUIDE_NEXT_WITHIN = 12 * 3_600_000L
+        const val NOTICE_MS = 10_000L
         const val BREAK_DELAY_MS = 2_000L
         const val BREAK_FADE_MS = 800L
     }

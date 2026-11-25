@@ -391,7 +391,7 @@ class GuideView(
         val dead = ch.id in repo.deadChannels
         numberPaint.color = if (dead) Palette.FAINT else if (crt) Palette.ACCENT else Palette.MUTED
         val base = y + rowH / 2f + numberPaint.textSize * 0.36f
-        c.drawText((repo.numbers[ch.id] ?: 0).toString(), pad * 0.8f, base, numberPaint)
+        c.drawText(repo.numberLabel(ch.id) ?: "0", pad * 0.8f, base, numberPaint)
 
         // Logo, fitted inside a fixed box with its proportions kept. A CRT can't show one that small.
         val boxL = context.dpf(if (crt) 54f else 38f)

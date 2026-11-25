@@ -33,8 +33,8 @@ class BingoView(ctx: Context) : FrameLayout(ctx) {
     }
     private val ballLetter = ctx.label(size = 40f, color = Palette.ON_ACCENT, bold = true).apply { gravity = Gravity.CENTER }
     private val ballNumber = ctx.label(size = 112f, color = Palette.ON_ACCENT, bold = true).apply { gravity = Gravity.CENTER }
-    private val count = ctx.label(size = 22f, bold = true).apply { gravity = Gravity.CENTER }
-    private val before = ctx.label(size = 18f, color = Palette.MUTED, lines = 2).apply { gravity = Gravity.CENTER }
+    private val count = ctx.label(size = 22f, bold = true, lines = 2).apply { gravity = Gravity.CENTER }
+    private val before = ctx.label(size = 18f, color = Palette.MUTED, lines = 4).apply { gravity = Gravity.CENTER }
     private val patternName = ctx.label(size = 26f, bold = true)
     private val patternText = ctx.label(size = 16f, color = Palette.MUTED, lines = 2)
     private val mini = arrayOfNulls<View>(25)
@@ -56,9 +56,9 @@ class BingoView(ctx: Context) : FrameLayout(ctx) {
         val pad = ctx.dp(if (Look.crt) 14 else 32)
         val page = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, ctx.dp(20), pad, ctx.dp(14))
+            setPadding(pad, ctx.dp(12), pad, ctx.dp(10))
         }
-        val main = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val main = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
 
         // Left: the title, the ball and what came before.
         val left = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
@@ -72,10 +72,10 @@ class BingoView(ctx: Context) : FrameLayout(ctx) {
         ball.addView(ballLetter, LinearLayout.LayoutParams(WRAP, WRAP))
         ball.addView(ballNumber, LinearLayout.LayoutParams(WRAP, WRAP))
         val size = ctx.dp(if (Look.crt) 170 else 230)
-        left.addView(ball, LinearLayout.LayoutParams(size, size).apply { topMargin = ctx.dp(14); bottomMargin = ctx.dp(14) })
+        left.addView(ball, LinearLayout.LayoutParams(size, size).apply { topMargin = ctx.dp(12); bottomMargin = ctx.dp(12) })
         left.addView(count, LinearLayout.LayoutParams(MATCH, WRAP))
         left.addView(before, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(8) })
-        main.addView(left, LinearLayout.LayoutParams(0, WRAP, 0.27f).apply { rightMargin = ctx.dp(24) })
+        main.addView(left, LinearLayout.LayoutParams(0, MATCH, 0.27f).apply { rightMargin = ctx.dp(24) })
 
         val right = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
 
@@ -117,11 +117,11 @@ class BingoView(ctx: Context) : FrameLayout(ctx) {
             }
             board.addView(line, LinearLayout.LayoutParams(MATCH, 0, 1f))
         }
-        right.addView(board, LinearLayout.LayoutParams(MATCH, ctx.dp(if (Look.crt) 240 else 340)))
-        main.addView(right, LinearLayout.LayoutParams(0, WRAP, 0.73f))
+        right.addView(board, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        main.addView(right, LinearLayout.LayoutParams(0, MATCH, 0.73f))
 
         page.addView(main, LinearLayout.LayoutParams(MATCH, 0, 1f))
-        page.addView(hint, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(10) })
+        page.addView(hint, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(8) })
         addView(page, LayoutParams(MATCH, MATCH))
         draw(null)
     }
