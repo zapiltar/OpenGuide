@@ -501,10 +501,8 @@ class BarFrameView(ctx: Context, private val images: BarImages, private val now:
         setBackgroundColor(Palette.BG)
         left.addView(logo, LinearLayout.LayoutParams(MATCH, ctx.dp(72)).apply { bottomMargin = ctx.dp(8) })
         left.addView(name, LinearLayout.LayoutParams(MATCH, WRAP))
-        val clockRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        clockRow.addView(clock, LinearLayout.LayoutParams(WRAP, WRAP))
-        clockRow.addView(weatherLabel, LinearLayout.LayoutParams(WRAP, WRAP).apply { leftMargin = ctx.dp(12) })
-        left.addView(clockRow, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(4) })
+        left.addView(clock, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(4) })
+        left.addView(weatherLabel, LinearLayout.LayoutParams(MATCH, WRAP))
         left.addView(comingTitle, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(14); bottomMargin = ctx.dp(2) })
         left.addView(coming, LinearLayout.LayoutParams(MATCH, WRAP))
         addView(left)
