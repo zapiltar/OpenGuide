@@ -18,6 +18,10 @@
     }
   ],
   "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "openguide-bar-images" }],
+  // One bingo room per bar, holding the live connections of its TVs showing the Bingo channel. SQLite-backed
+  // so it runs on the free plan; it stores nothing.
+  "durable_objects": { "bindings": [{ "name": "BINGO_ROOMS", "class_name": "BingoRoom" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BingoRoom"] }],
   // Secrets, set with `npx wrangler secret put SETUP_CODE`, not here:
   // SETUP_CODE: a long random code that creates the owner's account on /admin/#/setup, and resets its password.
   "vars": {}

@@ -15,12 +15,15 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import org.json.JSONException
 import org.json.JSONObject
 import java.io.IOException
 
 // Bingo on a bar's TVs: 75-ball, one game per bar, kept on the bar server. The TV hosting the game calls the
-// numbers; every TV showing the Bingo channel checks for new ones every couple of seconds.
+// numbers; every TV showing the Bingo channel hears about each one the moment it's called.
 
 const val BINGO_CHANNEL_ID = "openguide.bingo"
 const val BINGO_BALLS = 75
@@ -84,30 +87,65 @@ fun parseBingo(json: String): BingoState {
     )
 }
 
-/** Talks to the bar server about the bar's bingo game. Only checks for changes while [start]ed. */
+/**
+ * Talks to the bar server about the bar's bingo game. While [start]ed, it keeps a WebSocket open to the bar's
+ * bingo room, which sends each change the moment it happens. If that connection can't be made or drops, it
+ * checks every few seconds instead, and keeps trying to reconnect.
+ */
 class BingoClient(private val http: OkHttpClient, private val base: String, private val token: () -> String?) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var poller: Job? = null
+    private var loop: Job? = null
     @Volatile private var etag: String? = null
+    @Volatile private var socket: WebSocket? = null
+    /** Whether [socket] is open and the server has been heard from recently. */
+    @Volatile private var live = false
+    @Volatile private var lastHeard = 0L
 
     private val _state = MutableStateFlow<BingoState?>(null)
     /** The latest game, or null before the first answer from the server. */
     val state: StateFlow<BingoState?> = _state
 
-    /** Checks for changes every [POLL_MS], while the board is on screen. Safe to call more than once. */
+    /** Connects while the board is on screen. Safe to call more than once. */
     fun start() {
-        if (poller?.isActive == true) return
-        poller = scope.launch {
+        if (loop?.isActive == true) return
+        loop = scope.launch {
+            var retryAt = 0L
+            var backoff = RETRY_MIN_MS
+            var lastPoll = 0L
+            var lastPing = 0L
             while (isActive) {
-                fetch()
-                delay(POLL_MS)
+                val now = System.currentTimeMillis()
+                if (socket == null && now >= retryAt) {
+                    connect()
+                    retryAt = now + backoff
+                    backoff = minOf(backoff * 2, RETRY_MAX_MS)
+                }
+                if (live) {
+                    backoff = RETRY_MIN_MS
+                    if (now - lastPing >= PING_MS) {
+                        socket?.send("ping")
+                        lastPing = now
+                    }
+                    // Nothing back, not even "pong": the connection has quietly died, as TV Wi-Fi sometimes does.
+                    if (now - lastHeard > SILENT_MS) {
+                        Log.i(TAG, "Live connection went quiet; reconnecting")
+                        drop()
+                    }
+                } else if (now - lastPoll >= FALLBACK_POLL_MS) {
+                    fetch()
+                    lastPoll = now
+                }
+                delay(TICK_MS)
             }
         }
     }
 
     fun stop() {
-        poller?.cancel()
-        poller = null
+        loop?.cancel()
+        loop = null
+        socket?.close(1000, "Left the Bingo channel")
+        socket = null
+        live = false
     }
 
     /** Forgets the game, when the TV is unlinked. */
@@ -115,6 +153,56 @@ class BingoClient(private val http: OkHttpClient, private val base: String, priv
         stop()
         etag = null
         _state.value = null
+    }
+
+    private fun drop() {
+        socket?.cancel()
+        socket = null
+        live = false
+    }
+
+    private fun connect() {
+        val t = token() ?: return
+        val req = Request.Builder().url("$base/api/tv/bingo/live").header("Authorization", "Bearer $t").build()
+        socket = http.newWebSocket(req, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (webSocket !== socket) return
+                Log.i(TAG, "Live connection open")
+                lastHeard = System.currentTimeMillis()
+                live = true
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                if (webSocket !== socket) return
+                lastHeard = System.currentTimeMillis()
+                if (text == "pong") return
+                try {
+                    _state.value = parseBingo(text)
+                    // A later check (if the connection drops) fetches the whole game, to match what's shown.
+                    etag = null
+                } catch (e: JSONException) {
+                    Log.w(TAG, "Live bingo message wasn't understood", e)
+                }
+            }
+
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                webSocket.close(1000, null)
+                closed(webSocket)
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = closed(webSocket)
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                Log.w(TAG, "Live connection failed${response?.let { " (HTTP ${it.code})" } ?: ""}", t)
+                closed(webSocket)
+            }
+
+            private fun closed(webSocket: WebSocket) {
+                if (webSocket !== socket) return
+                socket = null
+                live = false
+            }
+        })
     }
 
     private fun fetch() {
@@ -174,7 +262,13 @@ class BingoClient(private val http: OkHttpClient, private val base: String, priv
 
     private companion object {
         const val TAG = "Bingo"
-        const val POLL_MS = 2_000L
+        const val TICK_MS = 1_000L
+        /** How often to check while there's no live connection. */
+        const val FALLBACK_POLL_MS = 3_000L
+        const val PING_MS = 25_000L
+        const val SILENT_MS = 70_000L
+        const val RETRY_MIN_MS = 2_000L
+        const val RETRY_MAX_MS = 30_000L
         val JSON = "application/json; charset=utf-8".toMediaType()
     }
 }

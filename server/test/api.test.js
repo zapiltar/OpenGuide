@@ -598,6 +598,63 @@ describe("bingo", () => {
     for (const p of ["regular", "z", "box", "coverall"]) expect((await set(host.token, p)).body.pattern).toBe(p);
   });
 
+  /** Opens the live connection as [token]'s TV, collecting what the server sends. */
+  async function live(token) {
+    const ctx = createExecutionContext();
+    const res = await worker.fetch(
+      new Request(`${LOCAL}/api/tv/bingo/live`, { headers: { Upgrade: "websocket", Authorization: `Bearer ${token}` } }),
+      env,
+      ctx,
+    );
+    expect(res.status).toBe(101);
+    const ws = res.webSocket;
+    const messages = [];
+    const waiting = [];
+    ws.addEventListener("message", (e) => {
+      messages.push(e.data);
+      waiting.splice(0).forEach((resolve) => resolve());
+    });
+    ws.accept();
+    /** Waits until at least [n] messages have arrived. */
+    const next = async (n) => {
+      for (let i = 0; i < 50 && messages.length < n; i++) await new Promise((r) => { waiting.push(r); setTimeout(r, 100); });
+      expect(messages.length).toBeGreaterThanOrEqual(n);
+      return messages[n - 1];
+    };
+    return { ws, messages, next };
+  }
+
+  it("sends every change straight to the TVs showing the board", async () => {
+    const venue = await newVenue();
+    const left = await linkTv(venue.id, "Bar left");
+    const right = await linkTv(venue.id, "Bar right");
+    const watcher = await live(right.token);
+    // The game as it is, as soon as it connects.
+    expect(JSON.parse(await watcher.next(1))).toMatchObject({ game: 1, called: [], host: false });
+
+    await bingo(left.token, "host");
+    expect(JSON.parse(await watcher.next(2))).toMatchObject({ host: false, hostName: "Bar left" });
+    const called = (await bingo(left.token, "call")).body.called;
+    expect(JSON.parse(await watcher.next(3))).toMatchObject({ called, host: false });
+
+    // Each TV is told whether it's the host.
+    const hostSocket = await live(left.token);
+    expect(JSON.parse(await hostSocket.next(1))).toMatchObject({ called, host: true });
+
+    // "ping" gets "pong", so the TV knows the connection still works.
+    watcher.ws.send("ping");
+    expect(await watcher.next(4)).toBe("pong");
+    watcher.ws.close();
+    hostSocket.ws.close();
+  });
+
+  it("only takes WebSockets from linked TVs", async () => {
+    const venue = await newVenue();
+    const { token } = await linkTv(venue.id);
+    expect((await call("GET", "/api/tv/bingo/live", { headers: { Authorization: `Bearer ${token}` } })).status).toBe(426);
+    expect((await call("GET", "/api/tv/bingo/live", { headers: { Upgrade: "websocket", Authorization: "Bearer nope" } })).status).toBe(401);
+  });
+
   it("can be turned off for a bar", async () => {
     const venue = await newVenue();
     const { token } = await linkTv(venue.id);

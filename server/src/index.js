@@ -3,7 +3,9 @@ import { handleAdmin } from "./admin.js";
 import { HttpError, json } from "./http.js";
 import { feed, pairingStatus, setLayout, startPairing, unlink } from "./tv.js";
 import { tvWeather } from "./weather.js";
-import { bingoAction, getBingo } from "./bingo.js";
+import { bingoAction, getBingo, liveBingo } from "./bingo.js";
+
+export { BingoRoom } from "./bingoRoom.js";
 
 // Uploaded image keys look like "<bar id>/<uuid>.<ext>".
 const IMAGE_KEY = /^[0-9a-f-]{36}\/[0-9a-f-]{36}\.(png|jpg|webp|gif)$/;
@@ -26,6 +28,7 @@ async function route(request, env, ctx) {
   if (path === "/api/tv/layout" && method === "POST") return setLayout(request, env);
   if (path === "/api/tv/weather" && method === "GET") return tvWeather(request, env);
   if (path === "/api/tv/bingo" && method === "GET") return getBingo(request, env);
+  if (path === "/api/tv/bingo/live" && method === "GET") return liveBingo(request, env);
   if (path.startsWith("/api/tv/bingo/") && method === "POST") return bingoAction(request, env, path.slice("/api/tv/bingo/".length));
   if (path.startsWith("/img/") && method === "GET") return image(path.slice(5), env);
   if (path.startsWith("/api/")) throw new HttpError(404, "Not found");

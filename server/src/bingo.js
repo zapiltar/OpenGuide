@@ -1,6 +1,7 @@
 // Bingo on a bar's TVs: 75-ball, one game per bar. Any TV showing the Bingo channel can become the host;
 // only the host calls numbers, starts a new game or takes back a call. The server draws the numbers, so
-// every TV shows the same game, and TVs showing the board check for changes every couple of seconds.
+// every TV shows the same game. TVs showing the board keep a WebSocket open to the bar's bingo room
+// (bingoRoom.js), which sends each change as it happens; GET /api/tv/bingo is there for catching up.
 
 import { HttpError, json, readJson } from "./http.js";
 import { screenFromToken } from "./tv.js";
@@ -31,18 +32,47 @@ async function load(env, venueId) {
   return env.DB.prepare("SELECT * FROM bingo_games WHERE venue_id = ?").bind(venueId).first();
 }
 
-async function stateFor(env, row, screen) {
+/** The game as every TV sees it, with which screen is hosting. */
+async function snapshot(env, row) {
   const host = row.host_screen_id
-    ? await env.DB.prepare("SELECT id, name FROM screens WHERE id = ? AND venue_id = ?").bind(row.host_screen_id, screen.venue_id).first()
+    ? await env.DB.prepare("SELECT id, name FROM screens WHERE id = ? AND venue_id = ?").bind(row.host_screen_id, row.venue_id).first()
     : null;
   return {
     game: row.game,
     called: JSON.parse(row.called),
-    host: host?.id === screen.id,
+    hostScreenId: host?.id ?? null,
     hostName: host?.name ?? null,
     pattern: row.pattern ?? "regular",
     version: row.version,
   };
+}
+
+/** The game as one TV should show it: the same for every TV, except whether it's the host. */
+export function forScreen(snap, screenId) {
+  const { hostScreenId, ...rest } = snap;
+  return { ...rest, host: hostScreenId !== null && hostScreenId === screenId };
+}
+
+async function stateFor(env, row, screen) {
+  return forScreen(await snapshot(env, row), screen.id);
+}
+
+/** The bar's bingo room, which holds the live connections of its TVs showing the board. */
+function room(env, venueId) {
+  return env.BINGO_ROOMS.get(env.BINGO_ROOMS.idFromName(venueId));
+}
+
+/**
+ * GET /api/tv/bingo/live, as a WebSocket: the TV gets the game straight away, then every change the moment
+ * it happens. The TV sends "ping" now and then and gets "pong" back, to know the connection is still there.
+ */
+export async function liveBingo(request, env) {
+  if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") throw new HttpError(426, "Connect with a WebSocket");
+  const screen = await bingoScreen(request, env);
+  const snap = await snapshot(env, await load(env, screen.venue_id));
+  return room(env, screen.venue_id).fetch("https://bingo-room/live", {
+    headers: { Upgrade: "websocket", "X-Screen-Id": screen.id, "X-Bingo-State": JSON.stringify(snap) },
+  });
 }
 
 async function bingoScreen(request, env) {
@@ -109,7 +139,16 @@ export async function bingoAction(request, env, action) {
     const result = await env.DB.prepare(
       "UPDATE bingo_games SET called = ?, game = ?, host_screen_id = ?, pattern = ?, version = version + 1, updated_at = ? WHERE venue_id = ? AND version = ?",
     ).bind(JSON.stringify(nextCalled), game, host, pattern, Date.now(), screen.venue_id, row.version).run();
-    if (result.meta.changes === 1) return json(await stateFor(env, await load(env, screen.venue_id), screen));
+    if (result.meta.changes === 1) {
+      const snap = await snapshot(env, await load(env, screen.venue_id));
+      // Tell every TV showing the board. If that fails, they still catch up when they reconnect.
+      try {
+        await room(env, screen.venue_id).broadcast(snap);
+      } catch (e) {
+        console.error("Bingo broadcast failed", e);
+      }
+      return json(forScreen(snap, screen.id));
+    }
   }
   throw new HttpError(409, "The game changed at the same moment. Try again.");
 }
