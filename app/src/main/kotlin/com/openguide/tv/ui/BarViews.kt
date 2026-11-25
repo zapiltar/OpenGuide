@@ -277,12 +277,17 @@ class BarChannelView(ctx: Context, private val images: BarImages, private val no
         body.removeAllViews()
         heading.setTextColor(Palette.TEXT)
         val p = all[page]
-        val fullPicture = p is Page.Poster && p.event.fullScreen
-        setChrome(!fullPicture)
-        if (fullPicture) {
+        // A full-screen event poster, or a menu that's a picture, fills the screen on its own.
+        val fullPicture = when (p) {
+            is Page.Poster -> p.event.image.takeIf { p.event.fullScreen }
+            is Page.Menu -> p.menu.image
+            else -> null
+        }
+        setChrome(fullPicture == null)
+        if (fullPicture != null) {
             val img = ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
             body.addView(img, FrameLayout.LayoutParams(MATCH, MATCH))
-            images.load(img, (p as Page.Poster).event.image)
+            images.load(img, fullPicture)
             return
         }
         when (p) {
@@ -298,14 +303,9 @@ class BarChannelView(ctx: Context, private val images: BarImages, private val no
         }
     }
 
+    /** A typed-in menu. A picture menu is shown full screen by [draw] instead. */
     private fun menuPage(m: BarMenu) {
         heading.text = m.title
-        if (m.image != null) {
-            val img = ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
-            body.addView(img, FrameLayout.LayoutParams(MATCH, MATCH))
-            images.load(img, m.image)
-            return
-        }
         // Spread sections over up to three columns, filling the shortest column each time.
         // An item with a picture takes about two lines.
         val weight = { sec: com.openguide.tv.data.MenuSection -> sec.items.sumOf { if (it.image != null) 2 else 1 } + 1 }
