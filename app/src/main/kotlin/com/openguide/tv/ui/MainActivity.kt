@@ -32,6 +32,9 @@ import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import com.openguide.tv.OpenGuideApp
 import com.openguide.tv.data.BAR_CHANNEL_ID
+import com.openguide.tv.data.BINGO_CHANNEL_ID
+import com.openguide.tv.data.bingoCall
+import com.openguide.tv.data.bingoChannel
 import com.openguide.tv.data.BarFeed
 import com.openguide.tv.data.BarLayout
 import com.openguide.tv.data.BarMode
@@ -107,6 +110,7 @@ class MainActivity : Activity() {
     private lateinit var guideChannelView: GuideChannelView
     private lateinit var staticView: StaticView
     private lateinit var barChannelView: BarChannelView
+    private lateinit var bingoView: BingoView
     private lateinit var barFrame: BarFrameView
     private lateinit var barBreak: BarBreakView
     /** Fades the ad-break page in, and the sound out, once a break has gone on for [BREAK_DELAY_MS]. */
@@ -274,6 +278,8 @@ class MainActivity : Activity() {
         root.addView(guideChannelView, FrameLayout.LayoutParams(MATCH, MATCH))
         barChannelView = BarChannelView(this, barImages, bar::now)
         root.addView(barChannelView, FrameLayout.LayoutParams(MATCH, MATCH))
+        bingoView = BingoView(this)
+        root.addView(bingoView, FrameLayout.LayoutParams(MATCH, MATCH))
         // Fills the whole tube, as snow does, so it stays out of the overscan margins below.
         staticView = StaticView(this)
         root.addView(staticView, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -383,7 +389,7 @@ class MainActivity : Activity() {
     /** Keeps everything but full-screen video inside the part of the picture the tube shows. */
     private fun applyOverscan() {
         // Not the picker: it's centred anyway, and its dimming should reach the screen's edges.
-        listOf<View>(shell, banner, loadingView, cropper, crtNumber, breakLabel, subtitles, guideChannelView, barChannelView, barBreak, specialOverlay, barLink).forEach { v ->
+        listOf<View>(shell, banner, loadingView, cropper, crtNumber, breakLabel, subtitles, guideChannelView, barChannelView, bingoView, barBreak, specialOverlay, barLink).forEach { v ->
             v.layoutParams = (v.layoutParams as FrameLayout.LayoutParams).apply {
                 setMargins(insetX, insetY, insetX, insetY)
             }
@@ -619,6 +625,7 @@ class MainActivity : Activity() {
         bar.start()
         scope.launch { bar.feed.collect(::onBarFeed) }
         scope.launch { bar.weather.collect { barFrame.setWeather(it) } }
+        scope.launch { bar.bingo.state.collect { bingoView.setState(it) } }
         scope.launch {
             // Specials are timed to the second, so they're checked more often than the clock.
             while (true) {
@@ -708,8 +715,9 @@ class MainActivity : Activity() {
         val withGuide = guideCategory == CATEGORY_ALL || (guideCategory == CATEGORY_CRT && list.isNotEmpty())
         val withGuideChannel = if (Look.crt && prefs.guideChannel && withGuide) listOf(GUIDE_CHANNEL) + list else list
         val feed = bar.feed.value
-        val showBarChannel = feed != null && feed.channel.enabled && guideCategory == CATEGORY_ALL
-        return if (showBarChannel) listOf(barChannel(feed!!)) + withGuideChannel else withGuideChannel
+        if (feed == null || guideCategory != CATEGORY_ALL) return withGuideChannel
+        val barChannels = listOfNotNull(barChannel(feed).takeIf { feed.channel.enabled }, bingoChannel().takeIf { feed.bingo })
+        return barChannels + withGuideChannel
     }
 
     /** What was last on, which [Repo.channel] can't find if it was the guide channel. */
@@ -718,6 +726,7 @@ class MainActivity : Activity() {
         return when (id) {
             GUIDE_CHANNEL_ID -> GUIDE_CHANNEL.takeIf { Look.crt && prefs.guideChannel }
             BAR_CHANNEL_ID -> bar.feed.value?.takeIf { it.channel.enabled }?.let(::barChannel)
+            BINGO_CHANNEL_ID -> bar.feed.value?.takeIf { it.bingo }?.let { bingoChannel() }
             else -> repo.channel(id)
         }
     }
@@ -753,6 +762,13 @@ class MainActivity : Activity() {
             heroTitle.text = ch.name
             heroTime.text = "Menus, events and specials"
             heroDesc.text = "Press OK to watch."
+            heroProgress.visibility = View.INVISIBLE
+            return
+        }
+        if (ch.id == BINGO_CHANNEL_ID) {
+            heroTitle.text = "Bingo"
+            heroTime.text = "The numbers called so far, on every TV showing it"
+            heroDesc.text = "Press OK to watch. To call numbers, hold OK while watching and choose Host bingo."
             heroProgress.visibility = View.INVISIBLE
             return
         }
@@ -1047,6 +1063,9 @@ class MainActivity : Activity() {
         guideChannelView.visibility = if (on) View.VISIBLE else View.GONE
         if (on) refreshGuideChannel()
         barChannelView.visibility = if (screen == Screen.FULLSCREEN && player?.channel?.id == BAR_CHANNEL_ID) View.VISIBLE else View.GONE
+        val bingoOn = screen == Screen.FULLSCREEN && player?.channel?.id == BINGO_CHANNEL_ID
+        bingoView.visibility = if (bingoOn) View.VISIBLE else View.GONE
+        if (bingoOn) bar.bingo.start() else bar.bingo.stop()
         barFrame.visibility = if (screen == Screen.FULLSCREEN && framed()) View.VISIBLE else View.GONE
     }
 
@@ -1238,10 +1257,18 @@ class MainActivity : Activity() {
         val barItem = bar.feed.value?.let { PickerItem("bar", "Get the latest from ${it.venue.name}") }
         if (isVirtualChannel(ch.id)) {
             // No stream, so no picture or source settings, and it's on every list it can be on.
-            val items = listOfNotNull(previous?.let { PickerItem("prev", "Last channel: ${it.name}") }, barItem)
+            val items = buildList {
+                if (ch.id == BINGO_CHANNEL_ID) addAll(bingoItems())
+                previous?.let { add(PickerItem("prev", "Last channel: ${it.name}")) }
+                barItem?.let(::add)
+            }
             if (items.isNotEmpty()) {
                 picker.show(ch.name, items, null, focus = items.first().id) {
-                    if (it.id == "prev") goToPreviousChannel() else getBarChanges()
+                    when (it.id) {
+                        "prev" -> goToPreviousChannel()
+                        "bar" -> getBarChanges()
+                        else -> bingoChoice(it.id)
+                    }
                 }
             }
             return
@@ -1408,7 +1435,8 @@ class MainActivity : Activity() {
                 }
                 event.action == KeyEvent.ACTION_UP && okArmed -> {
                     okArmed = false
-                    if (banner.visibility == View.VISIBLE || crtNumber.visibility == View.VISIBLE) hideBanner.run() else showBanner()
+                    if (bingoHosting()) bingoAct("call")
+                    else if (banner.visibility == View.VISIBLE || crtNumber.visibility == View.VISIBLE) hideBanner.run() else showBanner()
                 }
             }
             KeyEvent.KEYCODE_DPAD_LEFT -> if (first) goToPreviousChannel()
@@ -1532,6 +1560,11 @@ class MainActivity : Activity() {
             }
             updateGuideChannel()
         }
+        if ((feed == null || !feed.bingo) && player?.channel?.id == BINGO_CHANNEL_ID) {
+            player?.stop()
+            if (screen == Screen.FULLSCREEN) showGuide(focus = true)
+            updateGuideChannel()
+        }
         checkSpecials()
     }
 
@@ -1552,6 +1585,45 @@ class MainActivity : Activity() {
                 android.util.Log.w("BarMode", "Couldn't change the layout", e)
                 Toast.makeText(this@MainActivity, "Couldn't reach the bar server, so the layout wasn't changed", Toast.LENGTH_LONG).show()
             }
+        }
+    }
+
+    // ---- Bingo ----
+
+    private fun bingoHosting(): Boolean =
+        player?.channel?.id == BINGO_CHANNEL_ID && bar.bingo.state.value?.host == true
+
+    /** The Bingo channel's part of the hold-OK menu: hosting, and for the host, the game itself. */
+    private fun bingoItems(): List<PickerItem> {
+        val s = bar.bingo.state.value ?: return emptyList()
+        if (!s.host) {
+            val label = s.hostName?.let { "Host bingo here instead of $it" } ?: "Host bingo on this TV"
+            return listOf(PickerItem("bingo:host", label))
+        }
+        return buildList {
+            if (!s.finished) add(PickerItem("bingo:call", "Call the next number"))
+            s.last?.let { add(PickerItem("bingo:undo", "Take back ${bingoCall(it)}")) }
+            add(PickerItem("bingo:new", "Start a new game"))
+            add(PickerItem("bingo:unhost", "Stop hosting"))
+        }
+    }
+
+    private fun bingoChoice(id: String) {
+        val action = id.removePrefix("bingo:")
+        val s = bar.bingo.state.value
+        if (action == "new" && s != null && s.called.isNotEmpty()) {
+            // Starting over clears the board on every TV, so it's asked about first.
+            val items = listOf(PickerItem("yes", "Yes, clear all ${s.called.size} numbers"), PickerItem("no", "No, keep playing"))
+            picker.show("Start a new game?", items, null, focus = "no") { if (it.id == "yes") bingoAct("new") }
+            return
+        }
+        bingoAct(action)
+    }
+
+    private fun bingoAct(action: String) {
+        scope.launch {
+            val error = bar.bingo.act(action) ?: return@launch
+            Toast.makeText(this@MainActivity, error, Toast.LENGTH_LONG).show()
         }
     }
 

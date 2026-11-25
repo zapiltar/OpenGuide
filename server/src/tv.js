@@ -182,6 +182,7 @@ export async function feed(request, env, ctx) {
       timezone: venue.timezone,
       theme: venue.theme_primary ? { primary: venue.theme_primary, secondary: venue.theme_secondary } : null,
       channel: channelOf(venue.channel),
+      bingo: venue.bingo !== 0,
     },
     screen: { id: screen.id, name: screen.name, layout: screen.layout },
     menus: menus.results.filter((m) => forScreen(m, screen.id)).map((m) => ({

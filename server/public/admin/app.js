@@ -927,7 +927,25 @@ async function channelPage(ctx) {
       render();
     });
   });
-  return form;
+  // Bingo is its own channel, so it has its own switch, saved as soon as it's changed.
+  const bingoOn = box(v.bingo);
+  bingoOn.addEventListener("change", async () => {
+    try {
+      await api("PATCH", `/venues/${v.id}`, { bingo: bingoOn.checked });
+      v.bingo = bingoOn.checked;
+      toast(bingoOn.checked ? "Bingo is on. TVs pick it up within 2 minutes." : "Bingo is off. TVs pick it up within 2 minutes.");
+    } catch (e) {
+      toast(e.message, true);
+      bingoOn.checked = v.bingo;
+    }
+  });
+  const bingoCard = h("div", { class: "card", style: "margin-top:16px" },
+    h("h2", { style: "margin:0" }, "Bingo"),
+    option(bingoOn, "Show the Bingo channel on the TVs", "A 75-ball board showing every number called, the same on every TV that's showing it."),
+    h("p", { class: "hint", style: "margin:0" },
+      "To run a game, tune any TV to Bingo, hold OK and choose “Host bingo on this TV”. Then press OK on that TV's remote to call each number. ",
+      "Hold OK again to take back a number or start a new game. Another TV can take over hosting the same way."));
+  return h("div", null, form, bingoCard);
 }
 
 // ----- screens -----

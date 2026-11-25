@@ -519,3 +519,80 @@ describe("weather", () => {
     expect((await call("GET", "/api/tv/weather", { headers: { Authorization: "Bearer nope" } })).status).toBe(401);
   });
 });
+
+describe("bingo", () => {
+  const as = (token) => ({ headers: { Authorization: `Bearer ${token}` } });
+  const bingo = (token, action, headers = {}) =>
+    action
+      ? call("POST", `/api/tv/bingo/${action}`, { headers: { Authorization: `Bearer ${token}` } })
+      : call("GET", "/api/tv/bingo", { headers: { Authorization: `Bearer ${token}`, ...headers } });
+
+  it("lets one TV host and call numbers that every TV sees", async () => {
+    const venue = await newVenue();
+    const left = await linkTv(venue.id, "Bar left");
+    const right = await linkTv(venue.id, "Bar right");
+    expect((await tv(left.token)).body.venue.bingo).toBe(true);
+
+    const start = await bingo(left.token);
+    expect(start.body).toMatchObject({ game: 1, called: [], host: false, hostName: null });
+
+    // Only the host can call.
+    expect((await bingo(left.token, "call")).status).toBe(403);
+    expect((await bingo(left.token, "host")).body).toMatchObject({ host: true, hostName: "Bar left" });
+    const first = await bingo(left.token, "call");
+    expect(first.body.called).toHaveLength(1);
+    const n = first.body.called[0];
+    expect(n).toBeGreaterThanOrEqual(1);
+    expect(n).toBeLessThanOrEqual(75);
+
+    const seen = await bingo(right.token);
+    expect(seen.body).toMatchObject({ called: [n], host: false, hostName: "Bar left" });
+    // Nothing changed, so the other TV gets a 304.
+    expect((await bingo(right.token, null, { "If-None-Match": seen.headers.get("ETag") })).status).toBe(304);
+
+    // The other TV can take over; then the first can't call any more.
+    expect((await bingo(right.token, "host")).body).toMatchObject({ host: true, hostName: "Bar right" });
+    expect((await bingo(left.token, "call")).status).toBe(403);
+    expect((await bingo(left.token)).body).toMatchObject({ host: false, hostName: "Bar right" });
+  });
+
+  it("never calls a number twice, and stops after 75", async () => {
+    const venue = await newVenue();
+    const { token } = await linkTv(venue.id);
+    await bingo(token, "host");
+    let last;
+    for (let i = 0; i < 75; i++) last = await bingo(token, "call");
+    expect(new Set(last.body.called).size).toBe(75);
+    expect([...last.body.called].sort((a, b) => a - b)).toEqual(Array.from({ length: 75 }, (_, i) => i + 1));
+    expect((await bingo(token, "call")).status).toBe(409);
+  });
+
+  it("takes back the last call, starts new games, and stops hosting", async () => {
+    const venue = await newVenue();
+    const { token } = await linkTv(venue.id);
+    await bingo(token, "host");
+    await bingo(token, "call");
+    const two = await bingo(token, "call");
+    const undone = await bingo(token, "undo");
+    expect(undone.body.called).toEqual(two.body.called.slice(0, 1));
+    const fresh = await bingo(token, "new");
+    expect(fresh.body).toMatchObject({ game: 2, called: [], host: true });
+    expect((await bingo(token, "unhost")).body).toMatchObject({ host: false, hostName: null });
+    expect((await bingo(token, "dance")).status).toBe(404);
+  });
+
+  it("can be turned off for a bar", async () => {
+    const venue = await newVenue();
+    const { token } = await linkTv(venue.id);
+    const off = await call("PATCH", `/api/admin/venues/${venue.id}`, { body: { bingo: false } });
+    expect(off.body.bingo).toBe(false);
+    expect((await tv(token)).body.venue.bingo).toBe(false);
+    expect((await bingo(token)).status).toBe(403);
+    expect((await bingo(token, "host")).status).toBe(403);
+    expect((await call("PATCH", `/api/admin/venues/${venue.id}`, { body: { bingo: "yes" } })).status).toBe(400);
+  });
+
+  it("needs a linked TV", async () => {
+    expect((await call("GET", "/api/tv/bingo", as("nope"))).status).toBe(401);
+  });
+});

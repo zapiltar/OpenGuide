@@ -55,7 +55,11 @@ class BarMode(ctx: Context, private val http: OkHttpClient, private val prefs: P
     private val _weather = MutableStateFlow<Weather?>(null)
     /** The weather at the bar, fetched only while the screen can be framed, since that's the only place it shows. */
     val weather: StateFlow<Weather?> = _weather
-    private var weatherAt = 0L
+    /** When the weather was last fetched, or 0 to fetch it at the next chance. */
+    @Volatile private var weatherAt = 0L
+
+    /** The bar's bingo game. */
+    val bingo = BingoClient(http, base) { prefs.barToken }
 
     /** How far this TV's clock is behind the server's, so specials start on time even if the TV's clock is off. */
     @Volatile var clockOffset = 0L
@@ -103,6 +107,7 @@ class BarMode(ctx: Context, private val http: OkHttpClient, private val prefs: P
     fun refreshNow() {
         scope.launch {
             refresh()
+            weatherAt = 0L
             refreshWeather()
         }
     }
@@ -132,6 +137,8 @@ class BarMode(ctx: Context, private val http: OkHttpClient, private val prefs: P
                         prefs.setEtag(ETAG_KEY, etag)
                         prefs.barScreenName = next.screenName
                         _feed.value = next
+                        // The bar changed something, maybe its ZIP code, so the weather is fetched again too.
+                        weatherAt = 0L
                     }
                     else -> Log.w(TAG, "Bar feed returned HTTP ${res.code}")
                 }
@@ -211,7 +218,7 @@ class BarMode(ctx: Context, private val http: OkHttpClient, private val prefs: P
     private fun refreshWeather() {
         val token = prefs.barToken ?: return
         if (_feed.value?.layout?.let { it != BarLayout.FULL } != true) return
-        if (_weather.value != null && System.currentTimeMillis() - weatherAt < WEATHER_MS) return
+        if (System.currentTimeMillis() - weatherAt < WEATHER_MS) return
         val req = Request.Builder().url("$base/api/tv/weather").header("Authorization", "Bearer $token").build()
         try {
             http.newCall(req).execute().use { res ->
@@ -239,6 +246,7 @@ class BarMode(ctx: Context, private val http: OkHttpClient, private val prefs: P
         cacheFile.delete()
         _feed.value = null
         _weather.value = null
+        bingo.reset()
     }
 
     private companion object {

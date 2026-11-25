@@ -180,4 +180,26 @@ class BarLogicTest {
         // A kind this app doesn't know yet gets a cloud.
         assertEquals("☁️", weatherIcon(w.copy(kind = "something new")))
     }
+
+    @Test fun bingoColumns() {
+        assertEquals('B', bingoLetter(1))
+        assertEquals('B', bingoLetter(15))
+        assertEquals('I', bingoLetter(16))
+        assertEquals('N', bingoLetter(45))
+        assertEquals('G', bingoLetter(46))
+        assertEquals('O', bingoLetter(75))
+        assertEquals("N 34", bingoCall(34))
+    }
+
+    @Test fun readsBingo() {
+        val s = parseBingo("""{"game":3,"called":[7,34,71],"host":false,"hostName":"Bar left","version":9}""")
+        assertEquals(BingoState(3, listOf(7, 34, 71), false, "Bar left", 9), s)
+        assertEquals(71, s.last)
+        assertFalse(s.finished)
+        val empty = parseBingo("""{"game":1,"called":[],"host":true,"hostName":null,"version":1}""")
+        assertNull(empty.last)
+        assertNull(empty.hostName)
+        assertTrue(isVirtualChannel(BINGO_CHANNEL_ID))
+        assertTrue(BingoState(1, (1..75).toList(), true, null, 1).finished)
+    }
 }

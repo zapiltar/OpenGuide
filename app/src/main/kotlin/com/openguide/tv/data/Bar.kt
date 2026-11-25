@@ -64,6 +64,8 @@ data class BarFeed(
     val events: List<BarEvent>,
     val specials: List<Special>,
     val channel: BarChannelSettings = BarChannelSettings(),
+    /** Whether the bar has bingo on, so the Bingo channel is in the guide. */
+    val bingo: Boolean = false,
 )
 
 /** How a linked TV shows channels. [id] is the server's name for it. */
@@ -119,7 +121,7 @@ const val BAR_CHANNEL_ID = "openguide.bar-channel"
 fun barChannel(feed: BarFeed) = Channel(BAR_CHANNEL_ID, feed.venue.name, "", emptyList(), feed.venue.logo, emptyList(), emptyList())
 
 /** Channels the app draws itself, with no stream to play. */
-fun isVirtualChannel(id: String?) = id == GUIDE_CHANNEL_ID || id == BAR_CHANNEL_ID
+fun isVirtualChannel(id: String?) = id == GUIDE_CHANNEL_ID || id == BAR_CHANNEL_ID || id == BINGO_CHANNEL_ID
 
 private fun JSONObject.str(name: String): String? = if (isNull(name)) null else optString(name).takeIf { it.isNotEmpty() }
 private fun JSONObject.int(name: String): Int? = if (isNull(name) || !has(name)) null else getInt(name)
@@ -152,6 +154,7 @@ fun parseBarFeed(json: String): BarFeed {
                 seconds = c.optInt("seconds", 12).coerceIn(5, 60),
             )
         } ?: BarChannelSettings(),
+        bingo = venue.optBoolean("bingo", false),
         screenName = o.getJSONObject("screen").getString("name"),
         layout = BarLayout.of(o.getJSONObject("screen").optString("layout")),
         menus = o.optJSONArray("menus").map { m ->

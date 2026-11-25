@@ -14,6 +14,7 @@ import android.view.View
 import com.openguide.tv.data.Block
 import com.openguide.tv.data.Channel
 import com.openguide.tv.data.BAR_CHANNEL_ID
+import com.openguide.tv.data.BINGO_CHANNEL_ID
 import com.openguide.tv.data.GUIDE_CHANNEL_ID
 import com.openguide.tv.data.HALF_HOUR
 import com.openguide.tv.data.Listings
@@ -479,6 +480,7 @@ class GuideView(
             p != null -> p.title
             ch.id == GUIDE_CHANNEL_ID -> "What's on, scrolling"
             ch.id == BAR_CHANNEL_ID -> "Menus, events and specials"
+            ch.id == BINGO_CHANNEL_ID -> "The numbers called so far"
             listings.get(ch.id) == null -> "…"
             else -> "No listings"
         }
