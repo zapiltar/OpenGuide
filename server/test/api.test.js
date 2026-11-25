@@ -648,6 +648,53 @@ describe("bingo", () => {
     hostSocket.ws.close();
   });
 
+  it("takes the host's actions over its live connection", async () => {
+    const venue = await newVenue();
+    const left = await linkTv(venue.id, "Bar left");
+    const right = await linkTv(venue.id, "Bar right");
+    const host = await live(left.token);
+    const watcher = await live(right.token);
+    const first = JSON.parse(await host.next(1));
+    await watcher.next(1);
+
+    // A TV that isn't hosting is told it can't call.
+    watcher.ws.send(JSON.stringify({ action: "call" }));
+    expect(JSON.parse(await watcher.next(2))).toEqual({ error: "Only the TV hosting bingo can do that" });
+
+    host.ws.send(JSON.stringify({ action: "host" }));
+    const hosting = JSON.parse(await host.next(2));
+    expect(hosting).toMatchObject({ host: true, hostName: "Bar left", version: first.version + 1 });
+    host.ws.send(JSON.stringify({ action: "call", version: hosting.version }));
+    const called = JSON.parse(await host.next(3));
+    expect(called.called).toHaveLength(1);
+    // Every TV hears about it, the one that isn't hosting included.
+    expect(JSON.parse(await watcher.next(4))).toMatchObject({ called: called.called, host: false });
+    host.ws.close();
+    watcher.ws.close();
+  });
+
+  it("ignores double and triple presses made from the same board", async () => {
+    const venue = await newVenue();
+    const { token } = await linkTv(venue.id);
+    const hosting = (await bingo(token, "host")).body;
+    const press = () => call("POST", "/api/tv/bingo/call", { body: { version: hosting.version }, headers: { Authorization: `Bearer ${token}` } });
+    const results = await Promise.all([press(), press(), press()]);
+    expect(results.every((r) => r.status === 200)).toBe(true);
+    expect((await bingo(token)).body.called).toHaveLength(1);
+    // A press from the board as it is now still works.
+    const now = (await bingo(token)).body;
+    const next = await call("POST", "/api/tv/bingo/call", { body: { version: now.version }, headers: { Authorization: `Bearer ${token}` } });
+    expect(next.body.called).toHaveLength(2);
+  });
+
+  it("carries on a game that was in the database before bingo rooms kept it", async () => {
+    const venue = await newVenue();
+    const { token, screenId } = await linkTv(venue.id, "Bar left");
+    await env.DB.prepare("INSERT INTO bingo_games (venue_id, game, called, host_screen_id, pattern, version, updated_at) VALUES (?, 4, '[5,40]', ?, 'x', 9, 0)")
+      .bind(venue.id, screenId).run();
+    expect((await bingo(token)).body).toEqual({ game: 4, called: [5, 40], host: true, hostName: "Bar left", pattern: "x", version: 9 });
+  });
+
   it("only takes WebSockets from linked TVs", async () => {
     const venue = await newVenue();
     const { token } = await linkTv(venue.id);

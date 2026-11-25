@@ -120,6 +120,8 @@ class MainActivity : Activity() {
     private lateinit var staticView: StaticView
     private lateinit var barChannelView: BarChannelView
     private lateinit var bingoView: BingoView
+    /** When the host last called a number with OK. */
+    private var lastBingoCall = 0L
     private lateinit var barFrame: BarFrameView
     private lateinit var barBreak: BarBreakView
     /** Fades the ad-break page in, and the sound out, once a break has gone on for [BREAK_DELAY_MS]. */
@@ -647,6 +649,7 @@ class MainActivity : Activity() {
         scope.launch { bar.feed.collect(::onBarFeed) }
         scope.launch { bar.weather.collect { barFrame.setWeather(it) } }
         scope.launch { bar.bingo.state.collect { bingoView.setState(it) } }
+        scope.launch { bar.bingo.errors.collect { Toast.makeText(this@MainActivity, it, Toast.LENGTH_LONG).show() } }
         scope.launch {
             // Specials are timed to the second, so they're checked more often than the clock.
             while (true) {
@@ -1514,7 +1517,7 @@ class MainActivity : Activity() {
                 }
                 event.action == KeyEvent.ACTION_UP && okArmed -> {
                     okArmed = false
-                    if (bingoHosting()) bingoAct("call")
+                    if (bingoHosting()) callBingoNumber()
                     else if (banner.visibility == View.VISIBLE || crtNumber.visibility == View.VISIBLE) hideBanner.run() else showBanner()
                 }
             }
@@ -1711,6 +1714,17 @@ class MainActivity : Activity() {
         bingoAct(action)
     }
 
+    /**
+     * OK on the host. Presses within [BINGO_PRESS_MS] of the last call are ignored, so a double or triple
+     * press calls one number; the server also ignores repeats that do get through.
+     */
+    private fun callBingoNumber() {
+        val now = System.currentTimeMillis()
+        if (now - lastBingoCall < BINGO_PRESS_MS) return
+        lastBingoCall = now
+        bingoAct("call")
+    }
+
     private fun bingoAct(action: String) {
         scope.launch {
             val error = bar.bingo.act(action) ?: return@launch
@@ -1851,6 +1865,7 @@ class MainActivity : Activity() {
         const val MAX_OVERSCAN = 20
         const val GUIDE_NEXT_WITHIN = 12 * 3_600_000L
         const val NOTICE_MS = 10_000L
+        const val BINGO_PRESS_MS = 1_000L
         const val BREAK_DELAY_MS = 2_000L
         const val BREAK_FADE_MS = 800L
     }

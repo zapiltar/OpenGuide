@@ -6,7 +6,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -105,6 +107,10 @@ class BingoClient(private val http: OkHttpClient, private val base: String, priv
     /** The latest game, or null before the first answer from the server. */
     val state: StateFlow<BingoState?> = _state
 
+    private val _errors = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    /** Why an action sent over the live connection didn't work, like "Only the TV hosting bingo can do that". */
+    val errors: SharedFlow<String> = _errors
+
     /** Connects while the board is on screen. Safe to call more than once. */
     fun start() {
         if (loop?.isActive == true) return
@@ -177,6 +183,11 @@ class BingoClient(private val http: OkHttpClient, private val base: String, priv
                 lastHeard = System.currentTimeMillis()
                 if (text == "pong") return
                 try {
+                    val o = JSONObject(text)
+                    if (o.has("error")) {
+                        _errors.tryEmit(o.getString("error"))
+                        return
+                    }
                     _state.value = parseBingo(text)
                     // A later check (if the connection drops) fetches the whole game, to match what's shown.
                     etag = null
@@ -230,10 +241,17 @@ class BingoClient(private val http: OkHttpClient, private val base: String, priv
     }
 
     /**
-     * Does [action] ("host", "unhost", "call", "undo", "new" or "pattern", with [body]) and shows the result
-     * straight away. Returns null if it worked, or a message saying why not.
+     * Does [action] ("host", "unhost", "call", "undo", "new" or "pattern", with [body]). Over the live connection
+     * when it's open, which is quickest: the result arrives like any other change, and a problem comes through
+     * [errors]. Otherwise over HTTP, returning null if it worked or a message saying why not.
+     *
+     * Calls, undos and new games say which version of the game they were made from, so the server ignores a
+     * repeat of one already done, as when OK is pressed twice quickly.
      */
     suspend fun act(action: String, body: JSONObject = JSONObject()): String? = withContext(Dispatchers.IO) {
+        if (action in GUARDED) _state.value?.let { body.put("version", it.version) }
+        val ws = socket
+        if (live && ws != null && ws.send(JSONObject(body.toString()).put("action", action).toString())) return@withContext null
         val t = token() ?: return@withContext "This TV isn't linked to a bar"
         val req = Request.Builder().url("$base/api/tv/bingo/$action")
             .header("Authorization", "Bearer $t")
@@ -263,6 +281,7 @@ class BingoClient(private val http: OkHttpClient, private val base: String, priv
     private companion object {
         const val TAG = "Bingo"
         const val TICK_MS = 1_000L
+        val GUARDED = setOf("call", "undo", "new")
         /** How often to check while there's no live connection. */
         const val FALLBACK_POLL_MS = 3_000L
         const val PING_MS = 25_000L
