@@ -47,9 +47,9 @@ class ThemeTest {
             "screen":{"id":"s","name":"A","layout":"framed"},"menus":[],"events":[],"specials":[]}"""
         val f = parseBarFeed(json)
         assertEquals(BarTheme("#1b5e20", "#ffc107"), f.venue.theme)
-        assertTrue(f.framed)
+        assertEquals(BarLayout.FRAMED, f.layout)
         val plain = parseBarFeed(json.replace(""""theme":{"primary":"#1b5e20","secondary":"#ffc107"}""", """"theme":null""").replace("framed", "full"))
         assertNull(plain.venue.theme)
-        assertFalse(plain.framed)
+        assertEquals(BarLayout.FULL, plain.layout)
     }
 }

@@ -9,7 +9,8 @@ import org.json.JSONObject
 
 /** [theme] is null when the bar keeps OpenGuide's own colors. */
 data class BarVenue(val name: String, val logo: String?, val timezone: String, val theme: BarTheme? = null)
-data class MenuItem(val name: String, val price: String?, val description: String?)
+/** [image] is the address of the item's optional picture. */
+data class MenuItem(val name: String, val price: String?, val description: String?, val image: String? = null)
 data class MenuSection(val title: String?, val items: List<MenuItem>)
 /** A menu is either a picture ([image]) or typed-in [sections]. */
 data class BarMenu(val id: String, val title: String, val image: String?, val sections: List<MenuSection>)
@@ -57,13 +58,35 @@ data class BarFeed(
     val version: Int,
     val venue: BarVenue,
     val screenName: String,
-    /** The picture fills the screen, or is framed by the bar's info along the left and bottom. */
-    val framed: Boolean = false,
+    /** Whether the picture fills the screen or is framed by the bar's info along the left and bottom. */
+    val layout: BarLayout = BarLayout.FULL,
     val menus: List<BarMenu>,
     val events: List<BarEvent>,
     val specials: List<Special>,
     val channel: BarChannelSettings = BarChannelSettings(),
 )
+
+/** How a linked TV shows channels. [id] is the server's name for it. */
+enum class BarLayout(val id: String, val label: String) {
+    FULL("full", "Full picture"),
+    FRAMED("framed", "Framed"),
+    /** Full picture, framed only while one of the bar's specials is on. */
+    DURING_SPECIALS("specials", "Framed during specials");
+
+    companion object {
+        fun of(id: String?) = entries.firstOrNull { it.id == id } ?: FULL
+    }
+}
+
+/**
+ * Whether the picture is framed at [now]. A screen that can be framed never shows banners or takeovers, because
+ * the frame's bottom bar shows the specials instead.
+ */
+fun framedAt(feed: BarFeed, now: Long): Boolean = when (feed.layout) {
+    BarLayout.FULL -> false
+    BarLayout.FRAMED -> true
+    BarLayout.DURING_SPECIALS -> feed.specials.any { s -> s.occurrences.any { now >= it.start && now < it.end } }
+}
 
 const val BAR_CHANNEL_ID = "openguide.bar-channel"
 
@@ -105,14 +128,14 @@ fun parseBarFeed(json: String): BarFeed {
             )
         } ?: BarChannelSettings(),
         screenName = o.getJSONObject("screen").getString("name"),
-        framed = o.getJSONObject("screen").optString("layout") == "framed",
+        layout = BarLayout.of(o.getJSONObject("screen").optString("layout")),
         menus = o.optJSONArray("menus").map { m ->
             BarMenu(
                 id = m.getString("id"),
                 title = m.getString("title"),
                 image = m.str("image").takeIf { m.optString("kind") == "image" },
                 sections = (if (m.isNull("sections")) null else m.optJSONArray("sections")).map { s ->
-                    MenuSection(s.str("title"), s.optJSONArray("items").map { MenuItem(it.getString("name"), it.str("price"), it.str("description")) })
+                    MenuSection(s.str("title"), s.optJSONArray("items").map { MenuItem(it.getString("name"), it.str("price"), it.str("description"), it.str("image")) })
                 },
             )
         },

@@ -33,11 +33,13 @@ import androidx.media3.ui.SubtitleView
 import com.openguide.tv.OpenGuideApp
 import com.openguide.tv.data.BAR_CHANNEL_ID
 import com.openguide.tv.data.BarFeed
+import com.openguide.tv.data.BarLayout
 import com.openguide.tv.data.BarMode
 import com.openguide.tv.data.Block
 import com.openguide.tv.data.PairStatus
 import com.openguide.tv.data.barChannel
 import com.openguide.tv.data.dueAppearance
+import com.openguide.tv.data.framedAt
 import com.openguide.tv.data.isVirtualChannel
 import com.openguide.tv.data.CATEGORY_ALL
 import com.openguide.tv.data.CATEGORY_CRT
@@ -107,6 +109,25 @@ class MainActivity : Activity() {
     private lateinit var barChannelView: BarChannelView
     private lateinit var barFrame: BarFrameView
     private lateinit var barBreak: BarBreakView
+    /** Fades the ad-break page in, and the sound out, once a break has gone on for [BREAK_DELAY_MS]. */
+    private var breakFade: android.animation.ValueAnimator? = null
+    private var breakQueued = false
+    private val startBreakPage = Runnable {
+        breakQueued = false
+        barBreak.alpha = 0f
+        barBreak.visibility = View.VISIBLE
+        breakFade = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = BREAK_FADE_MS
+            addUpdateListener {
+                val f = it.animatedValue as Float
+                barBreak.alpha = f
+                player?.exo?.volume = 1f - f
+            }
+            start()
+        }
+    }
+    /** Whether the picture was framed when last placed, to notice a "framed during specials" screen changing. */
+    private var wasFramed = false
     private lateinit var specialOverlay: SpecialOverlay
     private lateinit var barLink: BarLinkPanel
     private var brandLabel: TextView? = null
@@ -601,6 +622,7 @@ class MainActivity : Activity() {
             // Specials are timed to the second, so they're checked more often than the clock.
             while (true) {
                 delay(5_000)
+                checkFrame()
                 checkSpecials()
             }
         }
@@ -800,7 +822,7 @@ class MainActivity : Activity() {
             return
         }
         val params: FrameLayout.LayoutParams? = when (screen) {
-            Screen.FULLSCREEN -> if (framed()) {
+            Screen.FULLSCREEN -> if (framed().also { wasFramed = it }) {
                 FrameLayout.LayoutParams((frameW * BarFrameView.VIDEO_SHARE).toInt(), (frameH * BarFrameView.VIDEO_SHARE).toInt(), Gravity.TOP or Gravity.END)
             } else {
                 FrameLayout.LayoutParams(MATCH, MATCH)
@@ -1056,9 +1078,23 @@ class MainActivity : Activity() {
     private fun updateBreakLabel() {
         val onBreak = screen == Screen.FULLSCREEN && player?.onBreak == true
         val barBreakOn = onBreak && bar.feed.value != null
-        breakLabel.visibility = if (onBreak && !barBreakOn) View.VISIBLE else View.GONE
-        barBreak.visibility = if (barBreakOn) View.VISIBLE else View.GONE
-        player?.exo?.volume = if (barBreakOn) 0f else 1f
+        // On a bar's TV the small label shows for the moment before the events page fades in.
+        val pending = barBreakOn && barBreak.visibility != View.VISIBLE
+        breakLabel.visibility = if (onBreak && (!barBreakOn || pending)) View.VISIBLE else View.GONE
+        if (barBreakOn) {
+            if (pending && !breakQueued) {
+                breakQueued = true
+                barBreak.postDelayed(startBreakPage, BREAK_DELAY_MS)
+            }
+            return
+        }
+        barBreak.removeCallbacks(startBreakPage)
+        breakQueued = false
+        breakFade?.cancel()
+        breakFade = null
+        barBreak.visibility = View.GONE
+        barBreak.alpha = 1f
+        player?.exo?.volume = 1f
     }
 
     private fun applyVideoStatus() {
@@ -1220,9 +1256,7 @@ class MainActivity : Activity() {
             }
             if (previous != null) add(PickerItem("prev", "Last channel: ${previous.name}"))
             // The framed layout isn't used in CRT mode, so there's nothing to switch there.
-            bar.feed.value?.takeIf { !Look.crt }?.let { f ->
-                add(PickerItem("layout", if (f.framed) "Switch to full picture" else "Switch to framed view"))
-            }
+            bar.feed.value?.takeIf { !Look.crt }?.let { f -> add(PickerItem("layout", "Picture: ${f.layout.label}")) }
             barItem?.let(::add)
             ch.streams.forEachIndexed { i, s -> add(PickerItem("src$i", "Source ${i + 1}: ${s.label}")) }
         }
@@ -1237,7 +1271,7 @@ class MainActivity : Activity() {
                 "crop" -> prefs.channelCrop(ch.id).let { (x, y) -> cropper.show(x, y) }
                 "prev" -> goToPreviousChannel()
                 "bar" -> getBarChanges()
-                "layout" -> switchLayout()
+                "layout" -> pickLayout()
                 current -> {} // already playing this source, so don't restart it
                 else -> tune(ch, ch.streams[item.id.removePrefix("src").toInt()])
             }
@@ -1455,7 +1489,18 @@ class MainActivity : Activity() {
 
     /** Whether this screen frames channels with the bar's info. Not in CRT mode, where the tube is too small. */
     private fun framed(): Boolean =
-        !Look.crt && bar.feed.value?.framed == true && player?.channel?.let { !isVirtualChannel(it.id) } == true
+        !Look.crt && bar.feed.value?.let { framedAt(it, bar.now()) } == true && player?.channel?.let { !isVirtualChannel(it.id) } == true
+
+    /** A screen framed only during specials changes on its own as they start and end. */
+    private fun checkFrame() {
+        if (!uiReady) return
+        val now = framed()
+        if (now == wasFramed) return
+        wasFramed = now
+        updateGuideChannel()
+        placeVideo()
+        barFrame.draw()
+    }
 
     private fun brandName(): String = bar.feed.value?.venue?.name ?: "OpenGuide"
 
@@ -1489,11 +1534,19 @@ class MainActivity : Activity() {
         checkSpecials()
     }
 
-    private fun switchLayout() {
-        val framed = bar.feed.value?.framed != true
+    private fun pickLayout() {
+        val current = bar.feed.value?.layout ?: return
+        val items = BarLayout.entries.map { PickerItem(it.id, it.label) }
+        picker.show("Picture on this TV", items, current.id) { item ->
+            val layout = BarLayout.of(item.id)
+            if (layout != current) setLayout(layout)
+        }
+    }
+
+    private fun setLayout(layout: BarLayout) {
         scope.launch {
             try {
-                bar.setLayout(framed)
+                bar.setLayout(layout)
             } catch (e: IOException) {
                 android.util.Log.w("BarMode", "Couldn't change the layout", e)
                 Toast.makeText(this@MainActivity, "Couldn't reach the bar server, so the layout wasn't changed", Toast.LENGTH_LONG).show()
@@ -1507,8 +1560,9 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Puts up any special that's due, and takes down one whose time is up. A framed screen never does: its
-     * bottom bar already shows the specials, and a banner or takeover would cover the frame.
+     * Puts up any special that's due, and takes down one whose time is up. A screen that can be framed never
+     * does, even one framed only during specials: the frame's bottom bar shows the specials, and a banner or
+     * takeover would cover the frame.
      */
     private fun checkSpecials() {
         if (!uiReady) return
@@ -1516,10 +1570,10 @@ class MainActivity : Activity() {
         val now = bar.now()
         val current = specialOverlay.appearance
         if (current != null) {
-            if (now >= current.until || feed == null || feed.framed) endSpecial.run()
+            if (now >= current.until || feed == null || feed.layout != BarLayout.FULL) endSpecial.run()
             return
         }
-        if (feed == null || feed.framed || screen == Screen.SETTINGS || screen == Screen.LOADING) return
+        if (feed == null || feed.layout != BarLayout.FULL || screen == Screen.SETTINGS || screen == Screen.LOADING) return
         if (picker.isShowing || calibrator.isShowing || cropper.isShowing || barLink.isShowing) return
         val due = dueAppearance(feed.specials, now, shownSpecials) ?: return
         shownSpecials += due.key
@@ -1632,5 +1686,7 @@ class MainActivity : Activity() {
         const val KEY_FULLSCREEN = "fullscreen"
         const val MAX_OVERSCAN = 20
         const val GUIDE_NEXT_WITHIN = 12 * 3_600_000L
+        const val BREAK_DELAY_MS = 2_000L
+        const val BREAK_FADE_MS = 800L
     }
 }

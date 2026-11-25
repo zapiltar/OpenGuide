@@ -1,6 +1,6 @@
 import { INVITE_DAYS, RESET_DAYS, changePassword, makeLink } from "./accounts.js";
 import { checkSameOrigin, identify, requireManager, requireOwner, requireVenue } from "./auth.js";
-import { HttpError, imageUrl, json, readJson } from "./http.js";
+import { HttpError, imageUrl, json, menuSectionsOut, readJson } from "./http.js";
 import { cleanUpPairings, normalizeCode } from "./tv.js";
 import * as v from "./validate.js";
 
@@ -47,7 +47,7 @@ const KINDS = {
         title: v.text(body.title, "title", { max: 100, required: true }),
         kind,
         image_key: image,
-        sections: kind === "list" ? JSON.stringify(v.menuSections(body.sections)) : null,
+        sections: kind === "list" ? JSON.stringify(v.menuSections(body.sections, venueId)) : null,
         sort: v.integer(body.sort ?? 0, "sort", { min: -1000, max: 1000 }),
         screens: jsonOrNull(v.screenList(body.screens, screens)),
       };
@@ -58,7 +58,7 @@ const KINDS = {
       kind: r.kind,
       image: r.image_key,
       imageUrl: imageUrl(origin, r.image_key),
-      sections: r.sections ? JSON.parse(r.sections) : null,
+      sections: menuSectionsOut(r.sections, origin),
       sort: r.sort,
       screens: r.screens ? JSON.parse(r.screens) : null,
       updatedAt: r.updated_at,
@@ -301,7 +301,7 @@ export async function handleAdmin(request, env, path) {
       if (method === "PATCH") {
         const body = await readJson(request);
         const name = "name" in body ? v.text(body.name, "name", { max: 60, required: true }) : screen.name;
-        const layout = "layout" in body ? v.oneOf(body.layout, "layout", ["full", "framed"]) : screen.layout;
+        const layout = "layout" in body ? v.oneOf(body.layout, "layout", v.LAYOUTS) : screen.layout;
         await db.batch([
           db.prepare("UPDATE screens SET name = ?, layout = ? WHERE id = ?").bind(name, layout, itemId),
           bump(db, venueId),

@@ -305,7 +305,9 @@ class BarChannelView(ctx: Context, private val images: BarImages, private val no
             return
         }
         // Spread sections over up to three columns, filling the shortest column each time.
-        val itemCount = m.sections.sumOf { it.items.size + 1 }
+        // An item with a picture takes about two lines.
+        val weight = { sec: com.openguide.tv.data.MenuSection -> sec.items.sumOf { if (it.image != null) 2 else 1 } + 1 }
+        val itemCount = m.sections.sumOf(weight)
         val columns = when {
             Look.crt -> minOf(2, m.sections.size)
             else -> minOf(3, m.sections.size)
@@ -319,7 +321,7 @@ class BarChannelView(ctx: Context, private val images: BarImages, private val no
         val heights = IntArray(columns)
         for (section in m.sections) {
             val i = heights.indices.minBy { heights[it] }
-            heights[i] += section.items.size + 1
+            heights[i] += weight(section)
             val col = cols[i]
             section.title?.let {
                 col.addView(context.label(it, size + 2f, Palette.ACCENT, bold = true), LayoutParams(MATCH, WRAP).apply { topMargin = context.dp(6); bottomMargin = context.dp(6) })
@@ -328,8 +330,23 @@ class BarChannelView(ctx: Context, private val images: BarImages, private val no
                 val row = LinearLayout(context).apply { orientation = HORIZONTAL }
                 row.addView(context.label(item.name, size, bold = true), LayoutParams(0, WRAP, 1f))
                 item.price?.let { row.addView(context.label(it, size, Palette.ACCENT, bold = true), LayoutParams(WRAP, WRAP).apply { leftMargin = context.dp(12) }) }
-                col.addView(row, LayoutParams(MATCH, WRAP).apply { topMargin = context.dp(4) })
-                item.description?.let { col.addView(context.label(it, size - 4f, Palette.MUTED, lines = 2), LayoutParams(MATCH, WRAP)) }
+                val desc = item.description?.let { context.label(it, size - 4f, Palette.MUTED, lines = 2) }
+                if (item.image == null) {
+                    col.addView(row, LayoutParams(MATCH, WRAP).apply { topMargin = context.dp(4) })
+                    desc?.let { col.addView(it, LayoutParams(MATCH, WRAP)) }
+                    continue
+                }
+                // The picture sits to the left of the name, price and description.
+                val thumb = context.dp((size * 3.2f).toInt())
+                val img = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+                images.load(img, item.image)
+                val text = LinearLayout(context).apply { orientation = VERTICAL; gravity = Gravity.CENTER_VERTICAL }
+                text.addView(row, LayoutParams(MATCH, WRAP))
+                desc?.let { text.addView(it, LayoutParams(MATCH, WRAP)) }
+                val line = LinearLayout(context).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                line.addView(img, LayoutParams(thumb, thumb).apply { rightMargin = context.dp(12) })
+                line.addView(text, LayoutParams(0, WRAP, 1f))
+                col.addView(line, LayoutParams(MATCH, WRAP).apply { topMargin = context.dp(6) })
             }
         }
         val row = LinearLayout(context).apply { orientation = HORIZONTAL }

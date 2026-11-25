@@ -127,7 +127,7 @@ describe("the feed", () => {
     expect(r.status).toBe(200);
     expect(r.body.venue).toMatchObject({ name: "Joe's", logo: `${LOCAL}/img/${upload.body.key}`, timezone: "America/Chicago", theme: null });
     expect(r.body.screen).toMatchObject({ id: screenId, layout: "full" });
-    expect(r.body.menus[0].sections[0].items[0]).toEqual({ name: "Lager", price: "$5", description: null });
+    expect(r.body.menus[0].sections[0].items[0]).toEqual({ name: "Lager", price: "$5", description: null, image: null });
     expect(r.body.events.map((e) => e.title)).toEqual(["Trivia"]);
     expect(r.body.specials.map((s) => s.title)).toEqual(["Happy hour"]);
     const happy = r.body.specials[0];
@@ -211,6 +211,44 @@ describe("look and layout", () => {
     expect(r.body).toEqual({ id: screenId, name: "Bar left", layout: "framed" });
     expect((await tv(token)).body.screen.layout).toBe("framed");
     expect((await call("PATCH", `/api/admin/venues/${venue.id}/screens/${screenId}`, { body: { layout: "tiny" } })).status).toBe(400);
+  });
+
+  it("can frame a screen only while a special is on, from the site or the TV", async () => {
+    const venue = await newVenue();
+    const { token, screenId } = await linkTv(venue.id);
+    await call("PATCH", `/api/admin/venues/${venue.id}/screens/${screenId}`, { body: { layout: "specials" } });
+    expect((await tv(token)).body.screen.layout).toBe("specials");
+    await call("POST", "/api/tv/layout", { body: { layout: "full" }, headers: { Authorization: `Bearer ${token}` } });
+    await call("POST", "/api/tv/layout", { body: { layout: "specials" }, headers: { Authorization: `Bearer ${token}` } });
+    expect((await call("GET", `/api/admin/venues/${venue.id}/screens`)).body[0].layout).toBe("specials");
+  });
+});
+
+describe("menu item pictures", () => {
+  it("keeps a picture on an item, and sends the TV its address", async () => {
+    const venue = await newVenue();
+    const { token } = await linkTv(venue.id);
+    const up = await call("POST", `/api/admin/venues/${venue.id}/images`, { raw: new Uint8Array([1]), headers: { "Content-Type": "image/png" } });
+    const menu = await call("POST", `/api/admin/venues/${venue.id}/menus`, {
+      body: { title: "Food", kind: "list", sections: [{ items: [{ name: "Wings", image: up.body.key }, { name: "Fries" }] }] },
+    });
+    expect(menu.status).toBe(201);
+    const [wings, fries] = menu.body.sections[0].items;
+    expect(wings).toMatchObject({ name: "Wings", image: up.body.key, imageUrl: up.body.url });
+    expect(fries).toMatchObject({ image: null, imageUrl: null });
+    const items = (await tv(token)).body.menus[0].sections[0].items;
+    expect(items[0]).toEqual({ name: "Wings", price: null, description: null, image: up.body.url });
+    expect(items[1].image).toBe(null);
+  });
+
+  it("refuses another bar's picture", async () => {
+    const venue = await newVenue();
+    const other = await newVenue();
+    const up = await call("POST", `/api/admin/venues/${other.id}/images`, { raw: new Uint8Array([1]), headers: { "Content-Type": "image/png" } });
+    const r = await call("POST", `/api/admin/venues/${venue.id}/menus`, {
+      body: { title: "Food", kind: "list", sections: [{ items: [{ name: "Wings", image: up.body.key }] }] },
+    });
+    expect(r.status).toBe(400);
   });
 });
 

@@ -61,6 +61,9 @@ export function imageKey(value, venueId, field = "image") {
   return v;
 }
 
+/** How a screen shows channels: full picture, always framed, or framed only while a special is on. */
+export const LAYOUTS = ["full", "framed", "specials"];
+
 /** null for every screen, or a list of this bar's screen ids. */
 export function screenList(value, venueScreenIds) {
   if (value === undefined || value === null) return null;
@@ -72,7 +75,7 @@ export function screenList(value, venueScreenIds) {
   return [...new Set(value)];
 }
 
-export function menuSections(value) {
+export function menuSections(value, venueId) {
   if (!Array.isArray(value) || value.length === 0) throw bad("sections must be a list with at least one section");
   if (value.length > 20) throw bad("A menu can have at most 20 sections");
   return value.map((s, i) => {
@@ -88,6 +91,7 @@ export function menuSections(value) {
           name: text(it.name, `${where} name`, { max: 100, required: true }),
           price: text(it.price, `${where} price`, { max: 20 }),
           description: text(it.description, `${where} description`, { max: 300 }),
+          image: imageKey(it.image, venueId, `${where} picture`),
         };
       }),
     };

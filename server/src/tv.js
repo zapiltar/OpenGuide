@@ -1,6 +1,6 @@
-import { HttpError, imageUrl, json, randomToken, readJson, sha256 } from "./http.js";
+import { HttpError, imageUrl, json, menuSectionsOut, randomToken, readJson, sha256 } from "./http.js";
 import { occurrences } from "./schedule.js";
-import { channelOf } from "./validate.js";
+import { LAYOUTS, channelOf } from "./validate.js";
 
 // Linking a TV:
 // 1. The TV calls POST /api/tv/pair and shows the returned code. It keeps the secret to itself.
@@ -118,11 +118,11 @@ export function eventDates(e, timeZone, day) {
     .map((o) => ({ e, start: o.start, end: r.end ? o.end : null }));
 }
 
-/** POST /api/tv/layout {layout}: the TV switched between full picture and framed from its own menu. */
+/** POST /api/tv/layout {layout}: the TV changed its picture layout from its own menu. */
 export async function setLayout(request, env) {
   const screen = await screenFromToken(request, env);
   const body = await readJson(request);
-  if (body.layout !== "full" && body.layout !== "framed") throw new HttpError(400, 'layout must be "full" or "framed"');
+  if (!LAYOUTS.includes(body.layout)) throw new HttpError(400, `layout must be one of ${LAYOUTS.join(", ")}`);
   await env.DB.batch([
     env.DB.prepare("UPDATE screens SET layout = ? WHERE id = ?").bind(body.layout, screen.id),
     env.DB.prepare("UPDATE venues SET feed_version = feed_version + 1 WHERE id = ?").bind(screen.venue_id),
@@ -189,7 +189,11 @@ export async function feed(request, env, ctx) {
       title: m.title,
       kind: m.kind,
       image: imageUrl(origin, m.image_key),
-      sections: m.sections ? JSON.parse(m.sections) : null,
+      // The TV only needs each item picture's address.
+      sections: menuSectionsOut(m.sections, origin)?.map((sec) => ({
+        ...sec,
+        items: sec.items.map(({ imageUrl: url, ...it }) => ({ ...it, image: url })),
+      })) ?? null,
     })),
     events: events.results
       .filter((e) => forScreen(e, screen.id))

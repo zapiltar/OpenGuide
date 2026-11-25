@@ -196,6 +196,48 @@ function imageField(venueId, key, url, { label = "Image", hint } = {}) {
   return { el, value: () => current };
 }
 
+/**
+ * A menu item's optional picture, shown beside it on the TV. It's kept on the item itself ([it].image and
+ * [it].imageUrl), so redrawing the menu editor doesn't lose it.
+ */
+function itemPicture(venueId, it) {
+  const fileInput = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", hidden: true });
+  const thumb = h("span");
+  const pickBtn = h("button", { type: "button", class: "small" });
+  const removeBtn = h("button", { type: "button", class: "small" }, "Remove picture");
+  function show() {
+    thumb.replaceChildren(...(it.imageUrl ? [h("img", { src: it.imageUrl, alt: "" })] : []));
+    pickBtn.textContent = it.imageUrl ? "Change picture" : "Add picture";
+    removeBtn.hidden = !it.imageUrl;
+  }
+  show();
+  pickBtn.addEventListener("click", () => fileInput.click());
+  removeBtn.addEventListener("click", () => {
+    it.image = null;
+    it.imageUrl = null;
+    show();
+  });
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files[0];
+    fileInput.value = "";
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) return toast("Images must be 5 MB or smaller", true);
+    pickBtn.disabled = true;
+    pickBtn.textContent = "Uploading…";
+    try {
+      const res = await api("POST", `/venues/${venueId}/images`, undefined, file);
+      it.image = res.key;
+      it.imageUrl = res.url;
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      pickBtn.disabled = false;
+      show();
+    }
+  });
+  return h("div", { class: "item-picture" }, thumb, pickBtn, removeBtn, fileInput);
+}
+
 /** "All screens" or "Only these", for items that can be limited to some TVs. */
 function screenPicker(screens, selected) {
   if (!screens.length) {
@@ -574,7 +616,8 @@ async function menuEditor(ctx, itemId) {
           h("input", { type: "text", placeholder: "Price", maxlength: 20, value: it.price || "", "aria-label": "Price", oninput: (e) => (it.price = e.target.value) }),
           h("button", { type: "button", class: "small", "aria-label": "Remove item",
             onclick: () => { sec.items.splice(ii, 1); drawSections(); } }, "✕"),
-          h("textarea", { placeholder: "Description (optional)", maxlength: 300, "aria-label": "Description", oninput: (e) => (it.description = e.target.value) }, it.description || ""))),
+          h("textarea", { placeholder: "Description (optional)", maxlength: 300, "aria-label": "Description", oninput: (e) => (it.description = e.target.value) }, it.description || ""),
+          itemPicture(ctx.venue.id, it))),
         h("div", { class: "row" },
           h("button", { type: "button", class: "small", onclick: () => { sec.items.push({ name: "", price: "", description: "" }); drawSections(); } }, "Add item"),
           sections.length > 1
@@ -889,6 +932,9 @@ async function channelPage(ctx) {
 
 // ----- screens -----
 
+/** How a screen shows channels, as the site and the TV name them. */
+const LAYOUT_NAMES = { full: "Full picture", framed: "Framed with bar info", specials: "Framed during specials" };
+
 const ONLINE_MS = 10 * 60 * 1000; // TVs check every 2 minutes, and report in at least every 4
 
 function screensPage(ctx) {
@@ -916,12 +962,12 @@ function screensPage(ctx) {
     else if (s.lastSeen && now - s.lastSeen < ONLINE_MS) status = h("span", { class: "badge ok" }, "Online");
     else status = h("span", { class: "badge" }, s.lastSeen ? `Last seen ${ago(s.lastSeen)}` : "Not seen yet");
     const layout = h("select", { "aria-label": `Picture on ${s.name}` },
-      h("option", { value: "full", selected: s.layout !== "framed" }, "Full picture"),
-      h("option", { value: "framed", selected: s.layout === "framed" }, "Framed with bar info"));
+      Object.entries(LAYOUT_NAMES).map(([value, name]) => h("option", { value, selected: (s.layout in LAYOUT_NAMES ? s.layout : "full") === value }, name)));
     layout.addEventListener("change", async () => {
       try {
         await api("PATCH", `/venues/${ctx.venue.id}/screens/${s.id}`, { layout: layout.value });
-        toast(layout.value === "framed" ? "Framed. The TV changes within 2 minutes." : "Full picture. The TV changes within 2 minutes.");
+        s.layout = layout.value;
+        toast(`${LAYOUT_NAMES[layout.value]}. The TV changes within 2 minutes.`);
       } catch (e) {
         toast(e.message, true);
         layout.value = s.layout;
@@ -953,7 +999,7 @@ function screensPage(ctx) {
   return h("div", null, form,
     h("h2", null, "Screens"),
     h("p", { class: "muted small", style: "margin-top:-4px" },
-      "“Framed” shrinks the channel to the top right, with your logo and upcoming events down the left and the current special along the bottom. Framed screens show specials only in that bottom bar, never as banners or full-screen takeovers."),
+      "“Framed” shrinks the channel to the top right, with your logo and upcoming events down the left and the current special along the bottom. Framed screens show specials only in that bottom bar, never as banners or full-screen takeovers. “Framed during specials” shows the full picture, and frames it only while a special like happy hour is on."),
     list.length ? h("ul", { class: "list" }, list) : h("div", { class: "card empty" }, "No TVs linked yet."));
 }
 

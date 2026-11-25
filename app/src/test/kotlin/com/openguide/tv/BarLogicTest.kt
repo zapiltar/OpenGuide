@@ -142,4 +142,32 @@ class BarLogicTest {
         assertTrue(isVirtualChannel(GUIDE_CHANNEL_ID))
         assertFalse(isVirtualChannel("cnn.us"))
     }
+
+    private fun feed(layout: BarLayout, vararg specials: Special) =
+        BarFeed(1, BarVenue("Bar", null, "UTC"), "TV", layout, emptyList(), emptyList(), specials.toList())
+
+    @Test fun framedDuringSpecialsOnlyWhileOneIsOn() {
+        val f = feed(BarLayout.DURING_SPECIALS, special())
+        assertFalse(framedAt(f, 999 * min))
+        assertTrue(framedAt(f, 1000 * min))
+        assertTrue(framedAt(f, 1179 * min))
+        assertFalse(framedAt(f, 1180 * min))
+        assertTrue(framedAt(feed(BarLayout.FRAMED), 0))
+        assertFalse(framedAt(feed(BarLayout.FULL, special()), 1000 * min))
+    }
+
+    @Test fun readsLayoutsAndItemPictures() {
+        val json = """{"version":1,"venue":{"name":"Bar","logo":null,"timezone":"UTC"},
+            "screen":{"id":"s","name":"A","layout":"specials"},"events":[],"specials":[],
+            "menus":[{"id":"m","title":"Food","kind":"list","image":null,"sections":[{"title":null,"items":[
+              {"name":"Wings","price":"$9","description":null,"image":"https://x/img/a.png"},
+              {"name":"Fries","price":null,"description":null,"image":null}]}]}]}"""
+        val f = parseBarFeed(json)
+        assertEquals(BarLayout.DURING_SPECIALS, f.layout)
+        val items = f.menus[0].sections[0].items
+        assertEquals("https://x/img/a.png", items[0].image)
+        assertNull(items[1].image)
+        // A layout this app doesn't know yet shows the full picture.
+        assertEquals(BarLayout.FULL, parseBarFeed(json.replace("\"layout\":\"specials\"", "\"layout\":\"later\"")).layout)
+    }
 }

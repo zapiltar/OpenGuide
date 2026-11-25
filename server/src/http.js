@@ -40,3 +40,12 @@ export async function sha256(text) {
 export function imageUrl(origin, key) {
   return key ? `${origin}/img/${key}` : null;
 }
+
+/** A typed-in menu's stored sections, with each item picture's key turned into an address. */
+export function menuSectionsOut(stored, origin) {
+  if (!stored) return null;
+  return JSON.parse(stored).map((sec) => ({
+    ...sec,
+    items: sec.items.map((it) => ({ ...it, image: it.image ?? null, imageUrl: imageUrl(origin, it.image) })),
+  }));
+}

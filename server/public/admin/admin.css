@@ -181,6 +181,8 @@ legend { font-weight: 600; padding: 0 6px; }
 .section-edit { display: grid; gap: 10px; }
 .menu-item { display: grid; grid-template-columns: 1fr 100px auto; gap: 8px; align-items: start; }
 .menu-item textarea { grid-column: 1 / -1; min-height: 44px; }
+.item-picture { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.item-picture img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); display: block; }
 
 .form-actions { display: flex; gap: 10px; justify-content: space-between; flex-wrap: wrap; }
 .danger-zone { border-color: var(--danger); }
