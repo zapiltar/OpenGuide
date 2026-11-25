@@ -28,6 +28,30 @@ const val BINGO_BALLS = 75
 /** The Bingo channel, shown in the guide of a bar's TVs when the bar has bingo on. */
 fun bingoChannel() = Channel(BINGO_CHANNEL_ID, "Bingo", "", emptyList(), null, emptyList(), emptyList())
 
+/**
+ * What wins. [examples] are the squares of a 5 by 5 card (row * 5 + column) that make a win; regular bingo
+ * has twelve, one for each line, and the board shows them in turn. The middle square is free.
+ */
+enum class BingoPattern(val id: String, val label: String, val describe: String, val examples: List<Set<Int>>) {
+    REGULAR("regular", "Regular bingo", "Any line: across, down or corner to corner", buildList {
+        for (i in 0 until 5) add((0 until 5).map { i * 5 + it }.toSet())
+        for (i in 0 until 5) add((0 until 5).map { it * 5 + i }.toSet())
+        add(setOf(0, 6, 12, 18, 24))
+        add(setOf(4, 8, 12, 16, 20))
+    }),
+    Z("z", "The Z", "Top row, bottom row, and corner to corner between them",
+        listOf(setOf(0, 1, 2, 3, 4, 8, 12, 16, 20, 21, 22, 23, 24))),
+    X("x", "The X", "Both lines from corner to corner",
+        listOf(setOf(0, 6, 12, 18, 24, 4, 8, 16, 20))),
+    BOX("box", "Outer box", "Every square around the edge",
+        listOf((0 until 25).filter { it / 5 == 0 || it / 5 == 4 || it % 5 == 0 || it % 5 == 4 }.toSet())),
+    COVERALL("coverall", "Coverall", "Every number on the card", listOf((0 until 25).toSet()));
+
+    companion object {
+        fun of(id: String?) = entries.firstOrNull { it.id == id } ?: REGULAR
+    }
+}
+
 /** The game as this TV should show it. [host] is whether this TV is the one calling the numbers. */
 data class BingoState(
     val game: Int,
@@ -35,6 +59,7 @@ data class BingoState(
     val host: Boolean,
     val hostName: String?,
     val version: Int,
+    val pattern: BingoPattern = BingoPattern.REGULAR,
 ) {
     val last: Int? get() = called.lastOrNull()
     val finished: Boolean get() = called.size >= BINGO_BALLS
@@ -55,6 +80,7 @@ fun parseBingo(json: String): BingoState {
         host = o.optBoolean("host"),
         hostName = if (o.isNull("hostName")) null else o.optString("hostName").takeIf { it.isNotEmpty() },
         version = o.optInt("version"),
+        pattern = BingoPattern.of(o.optString("pattern")),
     )
 }
 
@@ -116,14 +142,14 @@ class BingoClient(private val http: OkHttpClient, private val base: String, priv
     }
 
     /**
-     * Does [action] ("host", "unhost", "call", "undo" or "new") and shows the result straight away. Returns
-     * null if it worked, or a message saying why not.
+     * Does [action] ("host", "unhost", "call", "undo", "new" or "pattern", with [body]) and shows the result
+     * straight away. Returns null if it worked, or a message saying why not.
      */
-    suspend fun act(action: String): String? = withContext(Dispatchers.IO) {
+    suspend fun act(action: String, body: JSONObject = JSONObject()): String? = withContext(Dispatchers.IO) {
         val t = token() ?: return@withContext "This TV isn't linked to a bar"
         val req = Request.Builder().url("$base/api/tv/bingo/$action")
             .header("Authorization", "Bearer $t")
-            .post("{}".toRequestBody(JSON))
+            .post(body.toString().toRequestBody(JSON))
             .build()
         try {
             http.newCall(req).execute().use { res ->

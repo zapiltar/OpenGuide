@@ -55,7 +55,8 @@ events on them:
 - **The bar's name, logo and colors** replace OpenGuide's.
 - **Pluto TV ad breaks** show the bar's events, with the sound off, until the show returns.
 - **Bingo**: a 75-ball board on its own channel, the same on every TV showing it. Any TV can host from the
-  options you get by holding OK, then call each number with OK.
+  options you get by holding OK, then call each number with OK, and choose what wins: any line, a Z, an X,
+  the outer box or coverall.
 
 To link a TV, open **Settings > Bar mode** and type the code it shows into the bar's **Screens** page on the
 site. Accounts on the site are invite-only: the site owner adds each bar and sends its manager an invite

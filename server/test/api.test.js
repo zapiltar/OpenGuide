@@ -581,6 +581,23 @@ describe("bingo", () => {
     expect((await bingo(token, "dance")).status).toBe(404);
   });
 
+  it("lets the host set what wins, which a new game keeps", async () => {
+    const venue = await newVenue();
+    const host = await linkTv(venue.id, "Bar left");
+    const other = await linkTv(venue.id, "Bar right");
+    expect((await bingo(host.token)).body.pattern).toBe("regular");
+    const set = (token, pattern) =>
+      call("POST", "/api/tv/bingo/pattern", { body: { pattern }, headers: { Authorization: `Bearer ${token}` } });
+    expect((await set(host.token, "x")).status).toBe(403);
+    await bingo(host.token, "host");
+    expect((await set(host.token, "x")).body.pattern).toBe("x");
+    expect((await set(host.token, "star")).status).toBe(400);
+    expect((await bingo(other.token)).body.pattern).toBe("x");
+    await bingo(host.token, "call");
+    expect((await bingo(host.token, "new")).body).toMatchObject({ called: [], pattern: "x" });
+    for (const p of ["regular", "z", "box", "coverall"]) expect((await set(host.token, p)).body.pattern).toBe(p);
+  });
+
   it("can be turned off for a bar", async () => {
     const venue = await newVenue();
     const { token } = await linkTv(venue.id);

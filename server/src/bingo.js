@@ -2,11 +2,13 @@
 // only the host calls numbers, starts a new game or takes back a call. The server draws the numbers, so
 // every TV shows the same game, and TVs showing the board check for changes every couple of seconds.
 
-import { HttpError, json } from "./http.js";
+import { HttpError, json, readJson } from "./http.js";
 import { screenFromToken } from "./tv.js";
 
 export const BALLS = 75;
-const ACTIONS = new Set(["host", "unhost", "call", "undo", "new"]);
+const ACTIONS = new Set(["host", "unhost", "call", "undo", "new", "pattern"]);
+/** What wins: any line, a Z, an X, the outside edge, or every number on the card. */
+export const PATTERNS = ["regular", "z", "x", "box", "coverall"];
 
 /** A random number from 1 to 75 that hasn't been called yet, or null when all have been. */
 export function drawNumber(called) {
@@ -38,6 +40,7 @@ async function stateFor(env, row, screen) {
     called: JSON.parse(row.called),
     host: host?.id === screen.id,
     hostName: host?.name ?? null,
+    pattern: row.pattern ?? "regular",
     version: row.version,
   };
 }
@@ -62,12 +65,18 @@ export async function getBingo(request, env) {
 
 /**
  * POST /api/tv/bingo/<action>: "host" makes this TV the host (taking over from any other) and "unhost" stops.
- * Only the host can "call" the next number, "undo" the last one, or start a "new" game. A change only applies
+ * Only the host can "call" the next number, "undo" the last one, start a "new" game, or set the winning
+ * "pattern" ({pattern}); a new game keeps the pattern. A change only applies
  * to the version it was worked out from, so two quick presses can't both draw from the same board.
  */
 export async function bingoAction(request, env, action) {
   if (!ACTIONS.has(action)) throw new HttpError(404, "Not found");
   const screen = await bingoScreen(request, env);
+  let wanted = null;
+  if (action === "pattern") {
+    wanted = (await readJson(request)).pattern;
+    if (!PATTERNS.includes(wanted)) throw new HttpError(400, `pattern must be one of ${PATTERNS.join(", ")}`);
+  }
   for (let attempt = 0; attempt < 3; attempt++) {
     const row = await load(env, screen.venue_id);
     const called = JSON.parse(row.called);
@@ -75,6 +84,7 @@ export async function bingoAction(request, env, action) {
     let host = row.host_screen_id;
     let nextCalled = called;
     let game = row.game;
+    let pattern = row.pattern ?? "regular";
     if (action === "host") {
       host = screen.id;
     } else if (action === "unhost") {
@@ -89,14 +99,16 @@ export async function bingoAction(request, env, action) {
       } else if (action === "undo") {
         if (!called.length) return json(await stateFor(env, row, screen));
         nextCalled = called.slice(0, -1);
+      } else if (action === "pattern") {
+        pattern = wanted;
       } else {
         nextCalled = [];
         game++;
       }
     }
     const result = await env.DB.prepare(
-      "UPDATE bingo_games SET called = ?, game = ?, host_screen_id = ?, version = version + 1, updated_at = ? WHERE venue_id = ? AND version = ?",
-    ).bind(JSON.stringify(nextCalled), game, host, Date.now(), screen.venue_id, row.version).run();
+      "UPDATE bingo_games SET called = ?, game = ?, host_screen_id = ?, pattern = ?, version = version + 1, updated_at = ? WHERE venue_id = ? AND version = ?",
+    ).bind(JSON.stringify(nextCalled), game, host, pattern, Date.now(), screen.venue_id, row.version).run();
     if (result.meta.changes === 1) return json(await stateFor(env, await load(env, screen.venue_id), screen));
   }
   throw new HttpError(409, "The game changed at the same moment. Try again.");

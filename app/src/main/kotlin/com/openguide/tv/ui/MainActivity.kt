@@ -33,6 +33,7 @@ import androidx.media3.ui.SubtitleView
 import com.openguide.tv.OpenGuideApp
 import com.openguide.tv.data.BAR_CHANNEL_ID
 import com.openguide.tv.data.BINGO_CHANNEL_ID
+import com.openguide.tv.data.BingoPattern
 import com.openguide.tv.data.bingoCall
 import com.openguide.tv.data.bingoChannel
 import com.openguide.tv.data.BarFeed
@@ -1603,6 +1604,7 @@ class MainActivity : Activity() {
         return buildList {
             if (!s.finished) add(PickerItem("bingo:call", "Call the next number"))
             s.last?.let { add(PickerItem("bingo:undo", "Take back ${bingoCall(it)}")) }
+            add(PickerItem("bingo:pattern", "To win: ${s.pattern.label}"))
             add(PickerItem("bingo:new", "Start a new game"))
             add(PickerItem("bingo:unhost", "Stop hosting"))
         }
@@ -1611,6 +1613,16 @@ class MainActivity : Activity() {
     private fun bingoChoice(id: String) {
         val action = id.removePrefix("bingo:")
         val s = bar.bingo.state.value
+        if (action == "pattern") {
+            val items = BingoPattern.entries.map { PickerItem(it.id, it.label) }
+            picker.show("What wins?", items, s?.pattern?.id, focus = s?.pattern?.id) { item ->
+                scope.launch {
+                    val error = bar.bingo.act("pattern", org.json.JSONObject().put("pattern", item.id)) ?: return@launch
+                    Toast.makeText(this@MainActivity, error, Toast.LENGTH_LONG).show()
+                }
+            }
+            return
+        }
         if (action == "new" && s != null && s.called.isNotEmpty()) {
             // Starting over clears the board on every TV, so it's asked about first.
             val items = listOf(PickerItem("yes", "Yes, clear all ${s.called.size} numbers"), PickerItem("no", "No, keep playing"))

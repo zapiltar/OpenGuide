@@ -201,5 +201,19 @@ class BarLogicTest {
         assertNull(empty.hostName)
         assertTrue(isVirtualChannel(BINGO_CHANNEL_ID))
         assertTrue(BingoState(1, (1..75).toList(), true, null, 1).finished)
+        assertEquals(BingoPattern.REGULAR, s.pattern)
+        assertEquals(BingoPattern.X, parseBingo("""{"game":1,"called":[],"host":true,"hostName":null,"version":1,"pattern":"x"}""").pattern)
+    }
+
+    @Test fun bingoPatterns() {
+        // Regular bingo: 5 rows, 5 columns and 2 diagonals, each five squares.
+        assertEquals(12, BingoPattern.REGULAR.examples.size)
+        assertTrue(BingoPattern.REGULAR.examples.all { it.size == 5 })
+        assertEquals(13, BingoPattern.Z.examples.single().size)
+        assertEquals(9, BingoPattern.X.examples.single().size)
+        assertEquals(16, BingoPattern.BOX.examples.single().size)
+        assertFalse(12 in BingoPattern.BOX.examples.single())
+        assertEquals(25, BingoPattern.COVERALL.examples.single().size)
+        assertEquals(BingoPattern.REGULAR, BingoPattern.of("something new"))
     }
 }
