@@ -396,11 +396,31 @@ async function barPage(venueId, tab, item) {
 
   return h("div", null,
     h("div", { class: "bar-head" }, venue.logoUrl ? h("img", { src: venue.logoUrl, alt: "" }) : null,
-      h("div", null, h("h1", null, venue.name), h("div", { class: "muted small" }, venue.timezone.replace(/_/g, " ")))),
+      h("div", null, h("h1", null, venue.name), h("div", { class: "muted small" }, venue.timezone.replace(/_/g, " "))),
+      sendToTvs(ctx)),
     h("nav", { class: "tabs", "aria-label": "Bar sections" },
       TABS.filter(([, , managersOnly]) => !managersOnly || venue.role === "owner" || venue.role === "manager").map(([key, label]) =>
         h("a", { href: `${ctx.base}/${key}`, "aria-current": key === tab ? "page" : null }, label))),
     body);
+}
+
+/**
+ * "Send changes to TVs": changes saved on the site reach the TVs when this is pressed, or at the TVs' own
+ * hourly check. It stands out when there are changes the TVs haven't got yet.
+ */
+function sendToTvs(ctx) {
+  const v = ctx.venue;
+  const waiting = v.feedVersion > v.pushedVersion;
+  const button = h("button", { class: waiting ? "primary" : "" }, waiting ? "Send changes to TVs" : "Send to TVs again");
+  button.addEventListener("click", () => busy(button, async () => {
+    const { tvs } = await api("POST", `/venues/${v.id}/push`);
+    toast(tvs
+      ? `Sent to ${tvs} TV${tvs === 1 ? "" : "s"}. They update in a few seconds.`
+      : "No TVs are on right now. They'll get the changes when they're next switched on.");
+    render();
+  }));
+  return h("div", { class: "send-tvs" }, button,
+    h("span", { class: "muted small" }, waiting ? "You have changes the TVs haven't got yet." : "The TVs are up to date."));
 }
 
 // ----- specials -----
@@ -551,7 +571,7 @@ async function specialEditor(ctx, itemId) {
       await (isNew
         ? api("POST", `/venues/${ctx.venue.id}/specials`, body)
         : api("PUT", `/venues/${ctx.venue.id}/specials/${itemId}`, body));
-      toast("Saved. TVs pick it up within 2 minutes.");
+      toast("Saved. Send it to the TVs when you're ready.");
       go(`${ctx.base}/specials`);
     });
   });
@@ -822,7 +842,7 @@ async function eventEditor(ctx, itemId) {
         if (!body.start) throw new Error("Enter when it starts");
       }
       await (isNew ? api("POST", `/venues/${ctx.venue.id}/events`, body) : api("PUT", `/venues/${ctx.venue.id}/events/${itemId}`, body));
-      toast("Saved. TVs pick it up within 2 minutes.");
+      toast("Saved. Send it to the TVs when you're ready.");
       go(`${ctx.base}/events`);
     });
   });
@@ -923,7 +943,7 @@ async function channelPage(ctx) {
           seconds: Number(seconds.value),
         },
       });
-      toast("Saved. TVs pick it up within 2 minutes.");
+      toast("Saved. Send it to the TVs when you're ready.");
       render();
     });
   });
@@ -933,7 +953,8 @@ async function channelPage(ctx) {
     try {
       await api("PATCH", `/venues/${v.id}`, { bingo: bingoOn.checked });
       v.bingo = bingoOn.checked;
-      toast(bingoOn.checked ? "Bingo is on. TVs pick it up within 2 minutes." : "Bingo is off. TVs pick it up within 2 minutes.");
+      toast(bingoOn.checked ? "Bingo is on. Send it to the TVs when you're ready." : "Bingo is off. Send it to the TVs when you're ready.");
+      render();
     } catch (e) {
       toast(e.message, true);
       bingoOn.checked = v.bingo;
@@ -952,8 +973,6 @@ async function channelPage(ctx) {
 
 /** How a screen shows channels, as the site and the TV name them. */
 const LAYOUT_NAMES = { full: "Full picture", framed: "Framed with bar info", specials: "Framed during specials" };
-
-const ONLINE_MS = 10 * 60 * 1000; // TVs check every 2 minutes, and report in at least every 4
 
 function screensPage(ctx) {
   const code = h("input", { type: "text", class: "code-input", required: true, maxlength: 7, placeholder: "ABC-123", autocomplete: "off", autocapitalize: "characters", spellcheck: "false" });
@@ -977,7 +996,7 @@ function screensPage(ctx) {
   const list = ctx.screens.map((s) => {
     let status;
     if (!s.linked) status = h("span", { class: "badge warn" }, "Finishing linking");
-    else if (s.lastSeen && now - s.lastSeen < ONLINE_MS) status = h("span", { class: "badge ok" }, "Online");
+    else if (s.online) status = h("span", { class: "badge ok" }, "Online");
     else status = h("span", { class: "badge" }, s.lastSeen ? `Last seen ${ago(s.lastSeen)}` : "Not seen yet");
     const layout = h("select", { "aria-label": `Picture on ${s.name}` },
       Object.entries(LAYOUT_NAMES).map(([value, name]) => h("option", { value, selected: (s.layout in LAYOUT_NAMES ? s.layout : "full") === value }, name)));
@@ -985,7 +1004,8 @@ function screensPage(ctx) {
       try {
         await api("PATCH", `/venues/${ctx.venue.id}/screens/${s.id}`, { layout: layout.value });
         s.layout = layout.value;
-        toast(`${LAYOUT_NAMES[layout.value]}. The TV changes within 2 minutes.`);
+        toast(`${LAYOUT_NAMES[layout.value]}. Send it to the TVs to switch it now.`);
+        render();
       } catch (e) {
         toast(e.message, true);
         layout.value = s.layout;
@@ -1002,7 +1022,7 @@ function screensPage(ctx) {
       });
     });
     unlink.addEventListener("click", () => {
-      if (!confirm(`Unlink “${s.name}”? It goes back to plain OpenGuide at its next check, within 2 minutes.`)) return;
+      if (!confirm(`Unlink “${s.name}”? If it's on, it goes back to plain OpenGuide straight away; otherwise the next time it's switched on.`)) return;
       busy(unlink, async () => {
         await api("DELETE", `/venues/${ctx.venue.id}/screens/${s.id}`);
         toast("Unlinked");
@@ -1049,7 +1069,7 @@ function settingsPage(ctx) {
       const body = { displayName: display.value, logo: logo.value(), timezone: tz.value, theme: colors.value(), weatherZip: zip.value.trim() };
       if (name) body.name = name.value;
       await api("PATCH", `/venues/${v.id}`, body);
-      toast("Saved. TVs pick it up within 2 minutes.");
+      toast("Saved. Send it to the TVs when you're ready.");
       render();
     });
   });

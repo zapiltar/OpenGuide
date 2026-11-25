@@ -3,6 +3,7 @@ import { checkSameOrigin, identify, requireManager, requireOwner, requireVenue }
 import { HttpError, imageUrl, json, menuSectionsOut, readJson } from "./http.js";
 import { cleanUpPairings, normalizeCode } from "./tv.js";
 import { lookupZip } from "./weather.js";
+import { tvRoom } from "./tvRoom.js";
 import * as v from "./validate.js";
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -27,9 +28,14 @@ function venueOut(row, origin) {
     bingo: row.bingo !== 0,
     weatherPlace: row.weather_place ?? null,
     feedVersion: row.feed_version,
+    // The feed version last sent to the TVs; lower than feedVersion when there are changes they haven't got.
+    pushedVersion: row.pushed_version ?? row.feed_version,
     createdAt: row.created_at,
   };
 }
+
+/** TVs on versions before 1.5.2 check in every 2 minutes and are recorded every 30. */
+const OLD_APP_ONLINE_MS = 35 * 60_000;
 
 async function screenIds(db, venueId) {
   const { results } = await db.prepare("SELECT id FROM screens WHERE venue_id = ?").bind(venueId).all();
@@ -299,15 +305,29 @@ export async function handleAdmin(request, env, path) {
     throw new HttpError(405, "Method not allowed");
   }
 
+  // /venues/:id/push: tell the bar's TVs to fetch its changes now.
+  if (sub === "push" && itemId === undefined && method === "POST") {
+    const tvs = await tvRoom(env, venueId).refresh();
+    await db.prepare("UPDATE venues SET pushed_version = feed_version WHERE id = ?").bind(venueId).run();
+    return json({ tvs });
+  }
+
   // /venues/:id/screens
   if (sub === "screens") {
     if (itemId === undefined && method === "GET") {
-      const { results } = await db.prepare("SELECT * FROM screens WHERE venue_id = ? ORDER BY name").bind(venueId).all();
+      const [{ results }, connected] = await Promise.all([
+        db.prepare("SELECT * FROM screens WHERE venue_id = ? ORDER BY name").bind(venueId).all(),
+        tvRoom(env, venueId).connected().catch(() => []),
+      ]);
+      const live = new Set(connected);
+      const now = Date.now();
       return json(results.map((r) => ({
         id: r.id,
         name: r.name,
         layout: r.layout,
         linked: r.token_hash !== null,
+        // Connected now; or, for TVs on versions before 1.5.2, which check in every 2 minutes, seen lately.
+        online: live.has(r.id) || (r.last_seen !== null && now - r.last_seen < OLD_APP_ONLINE_MS),
         lastSeen: r.last_seen,
         appVersion: r.app_version,
         createdAt: r.created_at,
@@ -328,8 +348,10 @@ export async function handleAdmin(request, env, path) {
         return json({ id: itemId, name, layout });
       }
       if (method === "DELETE") {
-        // Its token stops working at once; the TV sees a 401 on its next check and unlinks itself.
+        // Its token stops working at once. If the TV is on, it's told to check now, gets a 401 and unlinks
+        // itself; otherwise that happens at its next check.
         await db.prepare("DELETE FROM screens WHERE id = ?").bind(itemId).run();
+        await tvRoom(env, venueId).refresh(itemId).catch(() => 0);
         return new Response(null, { status: 204 });
       }
     }

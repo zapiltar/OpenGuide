@@ -54,6 +54,85 @@ async function linkTv(venueId, name = "Bar left") {
 
 const tv = (token, headers = {}) => call("GET", "/api/tv/feed", { headers: { Authorization: `Bearer ${token}`, ...headers } });
 
+describe("sending changes to the TVs", () => {
+  /** Opens [token]'s TV's live connection, collecting what the server sends. */
+  async function connect(token) {
+    const ctx = createExecutionContext();
+    const res = await worker.fetch(
+      new Request(`${LOCAL}/api/tv/live`, { headers: { Upgrade: "websocket", Authorization: `Bearer ${token}` } }),
+      env,
+      ctx,
+    );
+    expect(res.status).toBe(101);
+    const ws = res.webSocket;
+    const messages = [];
+    ws.addEventListener("message", (e) => messages.push(e.data));
+    ws.accept();
+    const waitFor = async (n) => {
+      for (let i = 0; i < 50 && messages.length < n; i++) await new Promise((r) => setTimeout(r, 20));
+      return messages;
+    };
+    return { ws, messages, waitFor };
+  }
+
+  it("tells every connected TV to fetch its feed, and remembers what was sent", async () => {
+    const venue = await newVenue();
+    const a = await linkTv(venue.id, "Bar left");
+    const b = await linkTv(venue.id, "Bar right");
+    const left = await connect(a.token);
+    const right = await connect(b.token);
+
+    // A change: the site shows it hasn't gone to the TVs yet.
+    await call("PATCH", `/api/admin/venues/${venue.id}`, { body: { displayName: "The Local Pub" } });
+    const before = (await call("GET", `/api/admin/venues/${venue.id}`)).body;
+    expect(before.pushedVersion).toBeLessThan(before.feedVersion);
+
+    const pushed = await call("POST", `/api/admin/venues/${venue.id}/push`);
+    expect(pushed.body).toEqual({ tvs: 2 });
+    expect(await left.waitFor(1)).toEqual(["refresh"]);
+    expect(await right.waitFor(1)).toEqual(["refresh"]);
+    const after = (await call("GET", `/api/admin/venues/${venue.id}`)).body;
+    expect(after.pushedVersion).toBe(after.feedVersion);
+
+    // "ping" gets "pong".
+    left.ws.send("ping");
+    expect(await left.waitFor(2)).toEqual(["refresh", "pong"]);
+    left.ws.close();
+    right.ws.close();
+  });
+
+  it("shows which TVs are on, and unlinks a connected TV straight away", async () => {
+    const venue = await newVenue();
+    const { token, screenId } = await linkTv(venue.id);
+    // Linking records it as seen, so make it look like it hasn't checked in for an hour.
+    await env.DB.prepare("UPDATE screens SET last_seen = ? WHERE id = ?").bind(Date.now() - 3_600_000, screenId).run();
+    expect((await call("GET", `/api/admin/venues/${venue.id}/screens`)).body[0].online).toBe(false);
+    const tvSocket = await connect(token);
+    expect((await call("GET", `/api/admin/venues/${venue.id}/screens`)).body[0].online).toBe(true);
+    await call("DELETE", `/api/admin/venues/${venue.id}/screens/${screenId}`);
+    expect(await tvSocket.waitFor(1)).toEqual(["refresh"]);
+    expect((await tv(token)).status).toBe(401);
+    tvSocket.ws.close();
+  });
+
+  it("says where the TV's weather is for, so it can ask MET Norway itself", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ places: [{ "place name": "New York City", "state abbreviation": "NY", latitude: "40.7484", longitude: "-73.9967" }] }));
+    const venue = await newVenue();
+    const { token } = await linkTv(venue.id);
+    const byAddress = await call("GET", "/api/tv/feed", { headers: { Authorization: `Bearer ${token}` }, cf: { latitude: "51.5", longitude: "-0.12", city: "London", country: "GB" } });
+    expect(byAddress.body.weather).toEqual({ lat: 51.5, lon: -0.12, place: "London", us: false, source: "ip" });
+    await call("PATCH", `/api/admin/venues/${venue.id}`, { body: { weatherZip: "10001" } });
+    expect((await tv(token)).body.weather).toEqual({ lat: 40.7484, lon: -73.9967, place: "New York City, NY", us: true, source: "zip" });
+    vi.restoreAllMocks();
+  });
+
+  it("only takes WebSockets from linked TVs", async () => {
+    expect((await call("GET", "/api/tv/live", { headers: { Authorization: "Bearer nope" } })).status).toBe(426);
+    expect((await call("GET", "/api/tv/live", { headers: { Upgrade: "websocket", Authorization: "Bearer nope" } })).status).toBe(401);
+  });
+});
+
 describe("app download links", () => {
   it("sends /apk and apk.<domain> to the newest release", async () => {
     for (const [base, path] of [[LOCAL, "/apk"], [LOCAL, "/apk/"], ["https://apk.example.com", "/"], ["https://apk.example.com", "/anything"]]) {

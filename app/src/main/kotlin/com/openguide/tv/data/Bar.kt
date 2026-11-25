@@ -2,6 +2,9 @@ package com.openguide.tv.data
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 
 // Bar Mode: a TV linked to a bar shows that bar's menus, events and specials, managed on the bar's website
 // (the server in this repo's server/ folder). This file holds what the TV gets and the rules for when a special
@@ -66,6 +69,8 @@ data class BarFeed(
     val channel: BarChannelSettings = BarChannelSettings(),
     /** Whether the bar has bingo on, so the Bingo channel is in the guide. */
     val bingo: Boolean = false,
+    /** Where this TV's weather is for, or null if the server couldn't tell. */
+    val weatherPlace: WeatherPlace? = null,
 )
 
 /** How a linked TV shows channels. [id] is the server's name for it. */
@@ -93,13 +98,6 @@ fun framedAt(feed: BarFeed, now: Long): Boolean = when (feed.layout) {
 /** The weather where the bar is, for framed screens. [kind] is clear, partly, cloudy, fog, rain, sleet, snow or storm. */
 data class Weather(val temp: Int, val unit: String, val kind: String, val day: Boolean)
 
-/** Reads GET /api/tv/weather. Null when the server couldn't tell, or sent something unexpected. */
-fun parseWeather(json: String): Weather? {
-    val w = JSONObject(json).optJSONObject("weather") ?: return null
-    if (!w.has("temp")) return null
-    return Weather(w.getInt("temp"), w.optString("unit", "F"), w.optString("kind", "cloudy"), w.optBoolean("day", true))
-}
-
 /** An icon for the sky, as an emoji so it needs no pictures of its own. */
 fun weatherIcon(w: Weather): String = when (w.kind) {
     "clear" -> if (w.day) "\u2600\uFE0F" else "\uD83C\uDF19"
@@ -110,6 +108,56 @@ fun weatherIcon(w: Weather): String = when (w.kind) {
     "snow" -> "\u2744\uFE0F"
     "storm" -> "\u26C8\uFE0F"
     else -> "\u2601\uFE0F"
+}
+
+/** Where a TV's weather is for. [us] means Fahrenheit. */
+data class WeatherPlace(val lat: Double, val lon: Double, val us: Boolean)
+
+/** MET Norway's forecast for [p], to two decimal places, which is about a kilometre and what it asks for. */
+fun metForecastUrl(p: WeatherPlace): String =
+    String.format(Locale.US, "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=%.2f&lon=%.2f", p.lat, p.lon)
+
+/**
+ * MET Norway's symbol code ("partlycloudy_night", "heavyrainandthunder") as one of the kinds there are icons
+ * for, and whether it's day.
+ */
+fun skyOf(symbol: String?): Pair<String, Boolean> {
+    val s = symbol.orEmpty()
+    val day = !s.endsWith("_night")
+    val base = s.replace(Regex("_(day|night|polartwilight)$"), "")
+    val kind = when {
+        "thunder" in base -> "storm"
+        "snow" in base -> "snow"
+        "sleet" in base -> "sleet"
+        "rain" in base -> "rain"
+        base == "fog" -> "fog"
+        base == "clearsky" -> "clear"
+        base == "fair" || base == "partlycloudy" -> "partly"
+        else -> "cloudy"
+    }
+    return kind to day
+}
+
+/** The weather now from MET Norway's "compact" forecast: the latest hour that has started, or the first. */
+fun parseMetForecast(json: String, now: Long, us: Boolean): Weather? {
+    val series = JSONObject(json).optJSONObject("properties")?.optJSONArray("timeseries") ?: return null
+    if (series.length() == 0) return null
+    val iso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
+    var entry = series.getJSONObject(0)
+    for (i in 0 until series.length()) {
+        val t = series.getJSONObject(i)
+        val at = runCatching { iso.parse(t.getString("time"))!!.time }.getOrNull() ?: continue
+        if (at <= now) entry = t else break
+    }
+    val data = entry.optJSONObject("data") ?: return null
+    val details = data.optJSONObject("instant")?.optJSONObject("details") ?: return null
+    if (!details.has("air_temperature")) return null
+    val celsius = details.getDouble("air_temperature")
+    val symbol = (data.optJSONObject("next_1_hours") ?: data.optJSONObject("next_6_hours"))
+        ?.optJSONObject("summary")?.optString("symbol_code")
+    val (kind, day) = skyOf(symbol)
+    val temp = if (us) celsius * 9 / 5 + 32 else celsius
+    return Weather(Math.round(temp).toInt(), if (us) "F" else "C", kind, day)
 }
 
 /** "72°", the way it sits beside the clock. */
@@ -155,6 +203,9 @@ fun parseBarFeed(json: String): BarFeed {
             )
         } ?: BarChannelSettings(),
         bingo = venue.optBoolean("bingo", false),
+        weatherPlace = o.optJSONObject("weather")?.let { w ->
+            WeatherPlace(w.getDouble("lat"), w.getDouble("lon"), w.optBoolean("us", true))
+        },
         screenName = o.getJSONObject("screen").getString("name"),
         layout = BarLayout.of(o.getJSONObject("screen").optString("layout")),
         menus = o.optJSONArray("menus").map { m ->

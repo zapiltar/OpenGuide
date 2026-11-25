@@ -171,14 +171,43 @@ class BarLogicTest {
         assertEquals(BarLayout.FULL, parseBarFeed(json.replace("\"layout\":\"specials\"", "\"layout\":\"later\"")).layout)
     }
 
-    @Test fun readsWeather() {
-        val w = parseWeather("""{"weather":{"temp":68,"unit":"F","kind":"clear","day":false,"place":"NYC","source":"zip"}}""")!!
+    @Test fun readsMetNorwayForecasts() {
+        // 20 °C now and clear at night, then rain the hour after.
+        val json = """{"properties":{"timeseries":[
+            {"time":"2026-11-25T20:00:00Z","data":{"instant":{"details":{"air_temperature":20.0}},"next_1_hours":{"summary":{"symbol_code":"clearsky_night"}}}},
+            {"time":"2026-11-25T21:00:00Z","data":{"instant":{"details":{"air_temperature":18.0}},"next_1_hours":{"summary":{"symbol_code":"rain"}}}}]}}"""
+        val at2030 = 1795638600000L // 2026-11-25T20:30:00Z
+        val w = parseMetForecast(json, at2030, us = true)!!
         assertEquals(Weather(68, "F", "clear", false), w)
         assertEquals("🌙 68°", weatherText(w))
+        assertEquals(Weather(18, "C", "rain", true), parseMetForecast(json, at2030 + 3_600_000L, us = false))
+        // Before the first hour, the first is used.
+        assertEquals(20, parseMetForecast(json, 0L, us = false)!!.temp)
+        assertNull(parseMetForecast("""{"properties":{"timeseries":[]}}""", at2030, us = true))
         assertEquals("☀️", weatherIcon(w.copy(day = true)))
-        assertNull(parseWeather("""{"weather":null}"""))
         // A kind this app doesn't know yet gets a cloud.
         assertEquals("☁️", weatherIcon(w.copy(kind = "something new")))
+    }
+
+    @Test fun skyKinds() {
+        assertEquals("partly" to false, skyOf("partlycloudy_night"))
+        assertEquals("storm" to true, skyOf("heavyrainandthunder"))
+        assertEquals("snow" to true, skyOf("lightsnowshowers_day"))
+        assertEquals("sleet" to true, skyOf("sleet"))
+        assertEquals("fog" to true, skyOf("fog"))
+        assertEquals("cloudy" to true, skyOf(null))
+        assertEquals(
+            "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=42.60&lon=-82.88",
+            metForecastUrl(WeatherPlace(42.5978, -82.8823, true)),
+        )
+    }
+
+    @Test fun readsWhereTheWeatherIsFor() {
+        val json = """{"version":1,"venue":{"name":"Bar","logo":null,"timezone":"UTC"},
+            "screen":{"id":"s","name":"A","layout":"framed"},"menus":[],"events":[],"specials":[],
+            "weather":{"lat":42.5978,"lon":-82.8823,"place":"Mount Clemens, MI","us":true,"source":"zip"}}"""
+        assertEquals(WeatherPlace(42.5978, -82.8823, true), parseBarFeed(json).weatherPlace)
+        assertNull(parseBarFeed(json.replace(""""weather":{"lat":42.5978,"lon":-82.8823,"place":"Mount Clemens, MI","us":true,"source":"zip"}""", """"weather":null""")).weatherPlace)
     }
 
     @Test fun bingoColumns() {

@@ -1,11 +1,12 @@
 import { handleAuth } from "./accounts.js";
 import { handleAdmin } from "./admin.js";
 import { HttpError, json } from "./http.js";
-import { feed, pairingStatus, setLayout, startPairing, unlink } from "./tv.js";
+import { feed, liveTv, pairingStatus, setLayout, startPairing, unlink } from "./tv.js";
 import { tvWeather } from "./weather.js";
 import { bingoAction, getBingo, liveBingo } from "./bingo.js";
 
 export { BingoRoom } from "./bingoRoom.js";
+export { TvRoom } from "./tvRoom.js";
 
 /** The newest OpenGuide app, always. GitHub sends the APK from its latest release. */
 export const APK_URL = "https://github.com/zapiltar/OpenGuide/releases/latest/download/OpenGuide.apk";
@@ -32,6 +33,7 @@ async function route(request, env, ctx) {
   if (path === "/api/tv/pair/status" && method === "POST") return pairingStatus(request, env);
   if (path === "/api/tv/feed" && method === "GET") return feed(request, env, ctx);
   if (path === "/api/tv/unlink" && method === "POST") return unlink(request, env);
+  if (path === "/api/tv/live" && method === "GET") return liveTv(request, env, ctx);
   if (path === "/api/tv/layout" && method === "POST") return setLayout(request, env);
   if (path === "/api/tv/weather" && method === "GET") return tvWeather(request, env);
   if (path === "/api/tv/bingo" && method === "GET") return getBingo(request, env);

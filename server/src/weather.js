@@ -94,21 +94,27 @@ async function forecast(env, lat, lon, now) {
  * GET /api/tv/weather: {weather: {temp, unit, kind, day, place, source}} or {weather: null} when there's no
  * way to tell where the TV is or the service is down. Fahrenheit in the US, Celsius elsewhere.
  */
+/**
+ * Where a TV's weather is for: the bar's ZIP code if it set one, or else where Cloudflare places the TV's
+ * internet address. {lat, lon, place, us, source}, or null when neither is known. [venue] is its row.
+ */
+export function weatherPlace(venue, request) {
+  if (venue?.weather_lat != null) {
+    return { lat: venue.weather_lat, lon: venue.weather_lon, place: venue.weather_place, us: true, source: "zip" };
+  }
+  const cf = request.cf || {};
+  const lat = Number(cf.latitude);
+  const lon = Number(cf.longitude);
+  if (cf.latitude == null || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return { lat, lon, place: cf.city || null, us: cf.country === "US", source: "ip" };
+}
+
+/** GET /api/tv/weather, for versions of the app before 1.5.2. Newer ones ask MET Norway themselves. */
 export async function tvWeather(request, env) {
   const screen = await screenFromToken(request, env);
   const venue = await env.DB.prepare("SELECT weather_lat, weather_lon, weather_place FROM venues WHERE id = ?").bind(screen.venue_id).first();
   const now = Date.now();
-  let where = null;
-  if (venue?.weather_lat != null) {
-    where = { lat: venue.weather_lat, lon: venue.weather_lon, place: venue.weather_place, source: "zip", us: true };
-  } else {
-    const cf = request.cf || {};
-    const lat = Number(cf.latitude);
-    const lon = Number(cf.longitude);
-    if (cf.latitude != null && Number.isFinite(lat) && Number.isFinite(lon)) {
-      where = { lat, lon, place: cf.city || null, source: "ip", us: cf.country === "US" };
-    }
-  }
+  const where = weatherPlace(venue, request);
   if (!where) return json({ weather: null });
   const body = await forecast(env, where.lat, where.lon, now);
   const current = body && currentFrom(body, now);

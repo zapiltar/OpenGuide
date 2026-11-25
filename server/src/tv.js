@@ -1,6 +1,8 @@
 import { HttpError, imageUrl, json, menuSectionsOut, randomToken, readJson, sha256 } from "./http.js";
 import { occurrences } from "./schedule.js";
 import { LAYOUTS, channelOf } from "./validate.js";
+import { tvRoom } from "./tvRoom.js";
+import { weatherPlace } from "./weather.js";
 
 // Linking a TV:
 // 1. The TV calls POST /api/tv/pair and shows the returned code. It keeps the secret to itself.
@@ -12,9 +14,9 @@ import { LAYOUTS, channelOf } from "./validate.js";
 const PAIR_TTL = 10 * 60 * 1000;
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // No 0/O, 1/I/L: easy to read off a TV across a room.
 const DAY = 86_400_000;
-// TVs check every couple of minutes. Recording each check would be most of the database's writes, so
-// "last seen" is only updated when it's this old, or the app version changed.
-const SEEN_EVERY = 4 * 60_000;
+// "Last seen" is only written when it's this old, or the app version changed, to keep database writes down.
+// Whether a TV is on right now comes from its live connection instead (see tvRoom.js).
+const SEEN_EVERY = 30 * 60_000;
 const SPECIAL_DAYS = 7;
 const EVENT_DAYS = 60;
 // A repeating event is sent as its next few dates, so it doesn't crowd one-time events off the TVs' lists.
@@ -118,6 +120,28 @@ export function eventDates(e, timeZone, day) {
     .map((o) => ({ e, start: o.start, end: r.end ? o.end : null }));
 }
 
+/** Records that [screen] checked in, if it's been a while or its app version changed. */
+function noteSeen(env, ctx, screen, request, now) {
+  const appVersion = (request.headers.get("X-App-Version") || "").slice(0, 32) || null;
+  if (!screen.last_seen || now - screen.last_seen >= SEEN_EVERY || (appVersion && appVersion !== screen.app_version)) {
+    ctx.waitUntil(
+      env.DB.prepare("UPDATE screens SET last_seen = ?, app_version = COALESCE(?, app_version) WHERE id = ?")
+        .bind(now, appVersion, screen.id).run(),
+    );
+  }
+}
+
+/**
+ * GET /api/tv/live, as a WebSocket: the TV keeps this open while it's on, and is sent "refresh" when the bar
+ * sends its changes, or when the TV has been unlinked. It sends "ping" now and then and gets "pong" back.
+ */
+export async function liveTv(request, env, ctx) {
+  if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") throw new HttpError(426, "Connect with a WebSocket");
+  const screen = await screenFromToken(request, env);
+  noteSeen(env, ctx, screen, request, Date.now());
+  return tvRoom(env, screen.venue_id).fetch("https://tv-room/live", { headers: { Upgrade: "websocket", "X-Screen-Id": screen.id } });
+}
+
 /** POST /api/tv/layout {layout}: the TV changed its picture layout from its own menu. */
 export async function setLayout(request, env) {
   const screen = await screenFromToken(request, env);
@@ -146,13 +170,7 @@ const forScreen = (row, screenId) => !row.screens || JSON.parse(row.screens).inc
 export async function feed(request, env, ctx) {
   const screen = await screenFromToken(request, env);
   const now = Date.now();
-  const appVersion = (request.headers.get("X-App-Version") || "").slice(0, 32) || null;
-  if (!screen.last_seen || now - screen.last_seen >= SEEN_EVERY || (appVersion && appVersion !== screen.app_version)) {
-    ctx.waitUntil(
-      env.DB.prepare("UPDATE screens SET last_seen = ?, app_version = COALESCE(?, app_version) WHERE id = ?")
-        .bind(now, appVersion, screen.id).run(),
-    );
-  }
+  noteSeen(env, ctx, screen, request, now);
 
   const venue = await env.DB.prepare("SELECT * FROM venues WHERE id = ?").bind(screen.venue_id).first();
   const day = Math.floor(now / DAY) * DAY;
@@ -185,6 +203,8 @@ export async function feed(request, env, ctx) {
       bingo: venue.bingo !== 0,
     },
     screen: { id: screen.id, name: screen.name, layout: screen.layout },
+    // Where this TV's weather is for. The TV asks MET Norway for the forecast itself.
+    weather: weatherPlace(venue, request),
     menus: menus.results.filter((m) => forScreen(m, screen.id)).map((m) => ({
       id: m.id,
       title: m.title,
