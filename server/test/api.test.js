@@ -54,6 +54,16 @@ async function linkTv(venueId, name = "Bar left") {
 
 const tv = (token, headers = {}) => call("GET", "/api/tv/feed", { headers: { Authorization: `Bearer ${token}`, ...headers } });
 
+describe("app download links", () => {
+  it("sends /apk and apk.<domain> to the newest release", async () => {
+    for (const [base, path] of [[LOCAL, "/apk"], [LOCAL, "/apk/"], ["https://apk.example.com", "/"], ["https://apk.example.com", "/anything"]]) {
+      const r = await call("GET", path, { base });
+      expect(r.status).toBe(302);
+      expect(r.headers.get("Location")).toBe("https://github.com/zapiltar/OpenGuide/releases/latest/download/OpenGuide.apk");
+    }
+  });
+});
+
 describe("linking a TV", () => {
   it("links once, and the code can't be reused", async () => {
     const venue = await newVenue();

@@ -4,9 +4,19 @@
   "name": "openguide-bar",
   "main": "src/index.js",
   "compatibility_date": "2026-11-01",
+  // The admin site's own address. TVs use the workers.dev one, which must stay on.
+  "routes": [
+    { "pattern": "bar.exit7studios.com", "custom_domain": true },
+    // Sends anyone who visits it to the newest app download.
+    { "pattern": "apk.exit7studios.com", "custom_domain": true }
+  ],
+  "workers_dev": true,
   "assets": {
     "directory": "./public",
-    "run_worker_first": ["/api/*", "/img/*"]
+    "binding": "ASSETS",
+    // Everything goes through the worker first, so apk.<domain> can send its visitors on to the app download
+    // whatever they type after it; anything else falls through to these files.
+    "run_worker_first": true
   },
   "d1_databases": [
     {

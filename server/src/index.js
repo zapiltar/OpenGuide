@@ -7,6 +7,9 @@ import { bingoAction, getBingo, liveBingo } from "./bingo.js";
 
 export { BingoRoom } from "./bingoRoom.js";
 
+/** The newest OpenGuide app, always. GitHub sends the APK from its latest release. */
+export const APK_URL = "https://github.com/zapiltar/OpenGuide/releases/latest/download/OpenGuide.apk";
+
 // Uploaded image keys look like "<bar id>/<uuid>.<ext>".
 const IMAGE_KEY = /^[0-9a-f-]{36}\/[0-9a-f-]{36}\.(png|jpg|webp|gif)$/;
 
@@ -15,6 +18,10 @@ async function route(request, env, ctx) {
   const path = url.pathname.replace(/\/+$/, "");
   const method = request.method;
 
+  // Short addresses for installing the app on a TV, like in the Downloader app: apk.<domain>, or /apk.
+  if (url.hostname.startsWith("apk.") || path === "/apk") {
+    return new Response(null, { status: 302, headers: { Location: APK_URL, "Cache-Control": "no-store" } });
+  }
   if (path.startsWith("/api/auth/")) {
     return handleAuth(request, env, path.slice("/api/auth/".length).split("/"));
   }
