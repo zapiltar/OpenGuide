@@ -46,6 +46,23 @@ data class Special(
     val pictureOnly: Boolean = false,
 )
 
+/** What a bar's TVs show during Pluto TV ad breaks. */
+enum class AdBreakShow(val id: String) {
+    EVENTS("events"), CHANNEL("channel"), MENU("menu"), PICTURE("picture"), OFF("off");
+
+    companion object {
+        fun of(id: String?) = entries.firstOrNull { it.id == id } ?: EVENTS
+    }
+}
+
+/** Set on the website's Bar Channel tab. [image] is the picture's address. */
+data class AdBreaks(
+    val show: AdBreakShow = AdBreakShow.EVENTS,
+    val menuId: String? = null,
+    val image: String? = null,
+    val mute: Boolean = true,
+)
+
 /** What the Bar Channel shows, set on the website's Bar Channel tab. */
 data class BarChannelSettings(
     val enabled: Boolean = true,
@@ -69,6 +86,7 @@ data class BarFeed(
     val channel: BarChannelSettings = BarChannelSettings(),
     /** Whether the bar has bingo on, so the Bingo channel is in the guide. */
     val bingo: Boolean = false,
+    val adBreaks: AdBreaks = AdBreaks(),
     /** Where this TV's weather is for, or null if the server couldn't tell. */
     val weatherPlace: WeatherPlace? = null,
 )
@@ -203,6 +221,9 @@ fun parseBarFeed(json: String): BarFeed {
             )
         } ?: BarChannelSettings(),
         bingo = venue.optBoolean("bingo", false),
+        adBreaks = venue.optJSONObject("adBreaks")?.let { a ->
+            AdBreaks(AdBreakShow.of(a.str("show")), a.str("menuId"), a.str("image"), a.optBoolean("mute", true))
+        } ?: AdBreaks(),
         weatherPlace = o.optJSONObject("weather")?.let { w ->
             WeatherPlace(w.getDouble("lat"), w.getDouble("lon"), w.optBoolean("us", true))
         },

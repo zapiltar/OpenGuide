@@ -1,6 +1,6 @@
 import { HttpError, imageUrl, json, menuSectionsOut, randomToken, readJson, sha256 } from "./http.js";
 import { occurrences } from "./schedule.js";
-import { LAYOUTS, channelOf } from "./validate.js";
+import { LAYOUTS, adBreaksOf, channelOf } from "./validate.js";
 import { tvRoom } from "./tvRoom.js";
 import { weatherPlace } from "./weather.js";
 
@@ -201,6 +201,8 @@ export async function feed(request, env, ctx) {
       theme: venue.theme_primary ? { primary: venue.theme_primary, secondary: venue.theme_secondary } : null,
       channel: channelOf(venue.channel),
       bingo: venue.bingo !== 0,
+      // What to show during Pluto TV ad breaks, with the picture as an address.
+      adBreaks: (({ image, ...rest }) => ({ ...rest, image: imageUrl(origin, image) }))(adBreaksOf(venue.ad_breaks)),
     },
     screen: { id: screen.id, name: screen.name, layout: screen.layout },
     // Where this TV's weather is for. The TV asks MET Norway for the forecast itself.

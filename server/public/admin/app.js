@@ -850,6 +850,61 @@ async function eventEditor(ctx, itemId) {
   return h("div", null, h("h2", { style: "margin-top:0" }, isNew ? "New event" : "Edit event"), form);
 }
 
+/**
+ * What the TVs show during Pluto TV ad breaks, which start 2 seconds into the break and last until the show
+ * comes back.
+ */
+function adBreaksCard(ctx, menus) {
+  const v = ctx.venue;
+  const a = v.adBreaks;
+  const radios = {};
+  const choice = (value, title, hint) => {
+    radios[value] = h("input", { type: "radio", name: "ad-break-show", value, checked: a.show === value });
+    return h("label", { class: "check" }, radios[value], h("span", null, h("strong", null, title), " ", h("span", { class: "hint" }, hint)));
+  };
+  const menuSelect = h("select", { style: "width:auto", "aria-label": "Menu to show" },
+    menus.map((m) => h("option", { value: m.id, selected: m.id === a.menuId }, m.title)));
+  const picture = imageField(v.id, a.image, a.imageUrl, { label: "Picture", hint: "Fills the screen. 16:9, like 1920×1080, fits a TV exactly." });
+  const mute = h("input", { type: "checkbox", checked: a.mute });
+
+  const menuRow = h("div", { style: "margin-left:28px" }, menus.length ? menuSelect : h("span", { class: "hint" }, "No menus yet. Add one on the Menus tab."));
+  const sync = () => {
+    menuRow.hidden = !radios.menu.checked;
+    picture.el.hidden = !radios.picture.checked;
+  };
+  const save = h("button", { class: "primary" }, "Save");
+  const form = h("form", { class: "card", style: "margin-top:16px" },
+    h("h2", { style: "margin:0" }, "Pluto TV ad breaks"),
+    h("p", { class: "muted", style: "margin:0" },
+      "What the TVs show instead of the ads, from 2 seconds into a Pluto TV break until the show comes back. A small line at the top says the show will resume."),
+    h("fieldset", null, h("legend", null, "Show"),
+      choice("events", "Upcoming events", "A list of what's coming up, with the next event's picture."),
+      choice("channel", "The Bar Channel", "Its pages, one after another, as set up above."),
+      choice("menu", "One menu", "The menu you choose."),
+      menuRow,
+      choice("picture", "A picture", "One picture you upload, like an ad of your own."),
+      picture.el,
+      choice("off", "Nothing", "Leave the ads on screen.")),
+    h("label", { class: "check" }, mute, h("span", null, h("strong", null, "Turn the sound off during ad breaks"))),
+    h("div", null, save));
+  Object.values(radios).forEach((r) => r.addEventListener("change", sync));
+  sync();
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    busy(save, async () => {
+      const show = Object.keys(radios).find((k) => radios[k].checked);
+      if (show === "menu" && !menus.length) throw new Error("Add a menu on the Menus tab first");
+      if (show === "picture" && !picture.value()) throw new Error("Upload a picture to show");
+      await api("PATCH", `/venues/${v.id}`, {
+        adBreaks: { show, menuId: show === "menu" ? menuSelect.value : null, image: show === "picture" ? picture.value() : null, mute: mute.checked },
+      });
+      toast("Saved. Send it to the TVs when you're ready.");
+      render();
+    });
+  });
+  return form;
+}
+
 // ----- the Bar Channel -----
 
 /**
@@ -966,7 +1021,7 @@ async function channelPage(ctx) {
     h("p", { class: "hint", style: "margin:0" },
       "To run a game, tune any TV to Bingo, hold OK and choose “Host bingo on this TV”. Then press OK on that TV's remote to call each number. ",
       "Hold OK again to take back a number or start a new game. Another TV can take over hosting the same way."));
-  return h("div", null, form, bingoCard);
+  return h("div", null, form, bingoCard, adBreaksCard(ctx, menus));
 }
 
 // ----- screens -----

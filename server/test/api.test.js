@@ -133,6 +133,36 @@ describe("sending changes to the TVs", () => {
   });
 });
 
+describe("Pluto TV ad breaks", () => {
+  it("shows events with the sound off unless the bar chooses otherwise", async () => {
+    const venue = await newVenue();
+    const { token } = await linkTv(venue.id);
+    expect((await tv(token)).body.venue.adBreaks).toEqual({ show: "events", menuId: null, image: null, mute: true });
+
+    const menu = await call("POST", `/api/admin/venues/${venue.id}/menus`, { body: { title: "Drinks", kind: "list", sections: [{ items: [{ name: "Lager" }] }] } });
+    const set = await call("PATCH", `/api/admin/venues/${venue.id}`, { body: { adBreaks: { show: "menu", menuId: menu.body.id, mute: false } } });
+    expect(set.body.adBreaks).toMatchObject({ show: "menu", menuId: menu.body.id, mute: false });
+    expect((await tv(token)).body.venue.adBreaks).toEqual({ show: "menu", menuId: menu.body.id, image: null, mute: false });
+
+    const up = await call("POST", `/api/admin/venues/${venue.id}/images`, { raw: new Uint8Array([1]), headers: { "Content-Type": "image/png" } });
+    await call("PATCH", `/api/admin/venues/${venue.id}`, { body: { adBreaks: { show: "picture", image: up.body.key, mute: true } } });
+    expect((await tv(token)).body.venue.adBreaks).toMatchObject({ show: "picture", image: up.body.url });
+  });
+
+  it("needs a menu or a picture when one is chosen, and only the bar's own", async () => {
+    const venue = await newVenue();
+    const other = await newVenue();
+    const theirs = await call("POST", `/api/admin/venues/${other.id}/menus`, { body: { title: "Food", kind: "list", sections: [{ items: [{ name: "Wings" }] }] } });
+    const patch = (adBreaks) => call("PATCH", `/api/admin/venues/${venue.id}`, { body: { adBreaks } });
+    expect((await patch({ show: "menu" })).status).toBe(400);
+    expect((await patch({ show: "menu", menuId: theirs.body.id })).status).toBe(400);
+    expect((await patch({ show: "picture" })).status).toBe(400);
+    expect((await patch({ show: "dance" })).status).toBe(400);
+    expect((await patch({ show: "off", mute: "no" })).status).toBe(400);
+    expect((await patch({ show: "off", mute: false })).status).toBe(200);
+  });
+});
+
 describe("app download links", () => {
   it("sends /apk and apk.<domain> to the newest release", async () => {
     for (const [base, path] of [[LOCAL, "/apk"], [LOCAL, "/apk/"], ["https://apk.example.com", "/"], ["https://apk.example.com", "/anything"]]) {

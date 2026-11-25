@@ -198,6 +198,30 @@ export function channel(value, current, menuIds) {
   return next;
 }
 
+/** What shows during Pluto TV ad breaks. */
+export const AD_BREAK_SHOWS = ["events", "channel", "menu", "picture", "off"];
+const AD_BREAK_DEFAULTS = { show: "events", menuId: null, image: null, mute: true };
+
+export function adBreaksOf(stored) {
+  return { ...AD_BREAK_DEFAULTS, ...(stored ? JSON.parse(stored) : {}) };
+}
+
+/**
+ * Ad break settings from the admin site. A menu must be one of this bar's [menuIds], and a picture one of its
+ * uploaded images. Choosing a menu or a picture needs one.
+ */
+export function adBreaks(value, venueId, menuIds) {
+  if (!value || typeof value !== "object") throw bad("adBreaks must be an object");
+  const show = oneOf(value.show, "adBreaks.show", AD_BREAK_SHOWS);
+  const menuId = value.menuId ?? null;
+  if (menuId !== null && !menuIds.includes(menuId)) throw bad("That menu isn't one of this bar's");
+  if (show === "menu" && !menuId) throw bad("Choose which menu to show");
+  const image = imageKey(value.image ?? null, venueId, "adBreaks.image");
+  if (show === "picture" && !image) throw bad("Upload a picture to show");
+  if (typeof (value.mute ?? true) !== "boolean") throw bad("adBreaks.mute must be true or false");
+  return { show, menuId, image, mute: value.mute ?? true };
+}
+
 export const TIMEOUT_DEFAULTS = { banner: 30, takeover: 15, picture: 15 };
 
 /**

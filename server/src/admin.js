@@ -24,6 +24,7 @@ function venueOut(row, origin) {
     // What the signed-in person is at this bar: "owner", "manager" or "staff".
     role: row.role,
     channel: v.channelOf(row.channel),
+    adBreaks: (({ image, ...rest }) => ({ ...rest, image, imageUrl: imageUrl(origin, image) }))(v.adBreaksOf(row.ad_breaks)),
     weatherZip: row.weather_zip ?? null,
     bingo: row.bingo !== 0,
     weatherPlace: row.weather_place ?? null,
@@ -216,6 +217,10 @@ export async function handleAdmin(request, env, path) {
         const { results } = await db.prepare("SELECT id FROM menus WHERE venue_id = ?").bind(venueId).all();
         next.channel = JSON.stringify(v.channel(body.channel, v.channelOf(venue.channel), results.map((r) => r.id)));
       }
+      if ("adBreaks" in body) {
+        const { results } = await db.prepare("SELECT id FROM menus WHERE venue_id = ?").bind(venueId).all();
+        next.ad_breaks = JSON.stringify(v.adBreaks(body.adBreaks, venueId, results.map((r) => r.id)));
+      }
       if ("bingo" in body) {
         if (typeof body.bingo !== "boolean") throw new HttpError(400, "bingo must be true or false");
         next.bingo = body.bingo ? 1 : 0;
@@ -236,9 +241,9 @@ export async function handleAdmin(request, env, path) {
       }
       await db.batch([
         db.prepare(`UPDATE venues SET name = ?, display_name = ?, logo_key = ?, timezone = ?, theme_primary = ?, theme_secondary = ?, channel = ?,
-            weather_zip = ?, weather_lat = ?, weather_lon = ?, weather_place = ?, bingo = ? WHERE id = ?`)
+            weather_zip = ?, weather_lat = ?, weather_lon = ?, weather_place = ?, bingo = ?, ad_breaks = ? WHERE id = ?`)
           .bind(next.name, next.display_name, next.logo_key, next.timezone, next.theme_primary, next.theme_secondary, next.channel ?? null,
-            next.weather_zip ?? null, next.weather_lat ?? null, next.weather_lon ?? null, next.weather_place ?? null, next.bingo ?? 1, venueId),
+            next.weather_zip ?? null, next.weather_lat ?? null, next.weather_lon ?? null, next.weather_place ?? null, next.bingo ?? 1, next.ad_breaks ?? null, venueId),
         bump(db, venueId),
       ]);
       return json(venueOut({ ...next, feed_version: venue.feed_version + 1 }, origin));

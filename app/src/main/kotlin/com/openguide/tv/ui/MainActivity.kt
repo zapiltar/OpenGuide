@@ -31,6 +31,8 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import com.openguide.tv.OpenGuideApp
+import com.openguide.tv.data.AdBreakShow
+import com.openguide.tv.data.AdBreaks
 import com.openguide.tv.data.BAR_CHANNEL_ID
 import com.openguide.tv.data.BINGO_CHANNEL_ID
 import com.openguide.tv.data.BingoPattern
@@ -123,20 +125,28 @@ class MainActivity : Activity() {
     /** When the host last called a number with OK. */
     private var lastBingoCall = 0L
     private lateinit var barFrame: BarFrameView
-    private lateinit var barBreak: BarBreakView
+    private lateinit var barBreak: AdBreakView
     /** Fades the ad-break page in, and the sound out, once a break has gone on for [BREAK_DELAY_MS]. */
     private var breakFade: android.animation.ValueAnimator? = null
     private var breakQueued = false
+    /** Whether the break's page (or, with nothing chosen, its sound change) has started. */
+    private var breakStarted = false
     private val startBreakPage = Runnable {
         breakQueued = false
-        barBreak.alpha = 0f
-        barBreak.visibility = View.VISIBLE
+        breakStarted = true
+        val a = bar.feed.value?.adBreaks ?: AdBreaks()
+        val page = a.show != AdBreakShow.OFF
+        if (page) {
+            barBreak.alpha = 0f
+            barBreak.visibility = View.VISIBLE
+        }
+        breakLabel.visibility = if (page) View.GONE else View.VISIBLE
         breakFade = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
             duration = BREAK_FADE_MS
             addUpdateListener {
                 val f = it.animatedValue as Float
-                barBreak.alpha = f
-                player?.exo?.volume = 1f - f
+                if (page) barBreak.alpha = f
+                if (a.mute) player?.exo?.volume = 1f - f
             }
             start()
         }
@@ -328,7 +338,7 @@ class MainActivity : Activity() {
         root.addView(breakLabel, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END))
 
         // Covers Pluto ad breaks on a bar's TV.
-        barBreak = BarBreakView(this, barImages, bar::now)
+        barBreak = AdBreakView(this, barImages, bar::now)
         root.addView(barBreak, FrameLayout.LayoutParams(MATCH, MATCH))
 
         // Above the channel banner and the picture, below the menus the remote is using.
@@ -1167,24 +1177,28 @@ class MainActivity : Activity() {
     }
 
     /**
-     * A Pluto ad break gets a small label, or on a bar's TV a full-screen page of the bar's events with the
-     * sound off, until the show comes back.
+     * A Pluto ad break gets a small label. On a bar's TV, 2 seconds in, it fades to what the bar chose on its
+     * site (events, the Bar Channel, a menu or a picture), turning the sound down if the bar chose that, until
+     * the show comes back.
      */
     private fun updateBreakLabel() {
         val onBreak = screen == Screen.FULLSCREEN && player?.onBreak == true
         val barBreakOn = onBreak && bar.feed.value != null
-        // On a bar's TV the small label shows for the moment before the events page fades in.
-        val pending = barBreakOn && barBreak.visibility != View.VISIBLE
-        breakLabel.visibility = if (onBreak && (!barBreakOn || pending)) View.VISIBLE else View.GONE
         if (barBreakOn) {
-            if (pending && !breakQueued) {
-                breakQueued = true
-                barBreak.postDelayed(startBreakPage, BREAK_DELAY_MS)
+            if (!breakStarted) {
+                // The small label shows for the moment before the page fades in.
+                breakLabel.visibility = View.VISIBLE
+                if (!breakQueued) {
+                    breakQueued = true
+                    barBreak.postDelayed(startBreakPage, BREAK_DELAY_MS)
+                }
             }
             return
         }
+        breakLabel.visibility = if (onBreak) View.VISIBLE else View.GONE
         barBreak.removeCallbacks(startBreakPage)
         breakQueued = false
+        breakStarted = false
         breakFade?.cancel()
         breakFade = null
         barBreak.visibility = View.GONE

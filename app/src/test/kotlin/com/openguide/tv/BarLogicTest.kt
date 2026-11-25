@@ -202,6 +202,19 @@ class BarLogicTest {
         )
     }
 
+    @Test fun readsAdBreakChoices() {
+        val base = """{"version":1,"venue":{"name":"Bar","logo":null,"timezone":"UTC"AD},
+            "screen":{"id":"s","name":"A","layout":"full"},"menus":[],"events":[],"specials":[]}"""
+        // Older servers don't say: events, sound off.
+        assertEquals(AdBreaks(), parseBarFeed(base.replace("AD", "")).adBreaks)
+        val menu = parseBarFeed(base.replace("AD", ""","adBreaks":{"show":"menu","menuId":"m1","image":null,"mute":false}""")).adBreaks
+        assertEquals(AdBreaks(AdBreakShow.MENU, "m1", null, false), menu)
+        val picture = parseBarFeed(base.replace("AD", ""","adBreaks":{"show":"picture","menuId":null,"image":"https://x/img/a.png","mute":true}""")).adBreaks
+        assertEquals(AdBreaks(AdBreakShow.PICTURE, null, "https://x/img/a.png", true), picture)
+        assertEquals(AdBreakShow.OFF, AdBreakShow.of("off"))
+        assertEquals(AdBreakShow.EVENTS, AdBreakShow.of("something new"))
+    }
+
     @Test fun readsWhereTheWeatherIsFor() {
         val json = """{"version":1,"venue":{"name":"Bar","logo":null,"timezone":"UTC"},
             "screen":{"id":"s","name":"A","layout":"framed"},"menus":[],"events":[],"specials":[],

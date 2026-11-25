@@ -12,6 +12,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import coil.ImageLoader
 import coil.request.ImageRequest
+import com.openguide.tv.data.AdBreakShow
+import com.openguide.tv.data.AdBreaks
 import com.openguide.tv.data.Appearance
 import com.openguide.tv.data.BarEvent
 import com.openguide.tv.data.BarFeed
@@ -184,6 +186,14 @@ class BarChannelView(ctx: Context, private val images: BarImages, private val no
 
     private val pageMs get() = (feed?.channel?.seconds ?: 12) * 1000L
 
+    /** Show only this menu, rather than the Bar Channel's pages, as during an ad break set to show one menu. */
+    var pinnedMenu: String? = null
+        set(value) {
+            field = value
+            page = 0
+            draw()
+        }
+
     private val advance = object : Runnable {
         override fun run() {
             page = (page + 1) % pageCount
@@ -237,6 +247,7 @@ class BarChannelView(ctx: Context, private val images: BarImages, private val no
 
     /** The pages, in order, as chosen on the website's Bar Channel tab. */
     private fun pages(f: BarFeed, t: Long): List<Page> = buildList {
+        pinnedMenu?.let { id -> f.menus.firstOrNull { it.id == id }?.let { add(Page.Menu(it)); return@buildList } }
         val c = f.channel
         // Specials that are on lead, each with a page of its own in big type. Later ones share a list.
         val (onNow, later) = specialsComingUp(f.specials, t, DAY_MS).partition { it.second.start <= t }
@@ -610,9 +621,75 @@ class BarFrameView(ctx: Context, private val images: BarImages, private val now:
  * Covers a Pluto TV ad break on a bar's TV, with the sound off: the bar's upcoming events, or today's specials
  * if there are none. Keeps the ad break notice, so nobody thinks the channel has stuck.
  */
+/**
+ * What shows during a Pluto ad break on a bar's TV, as the bar chose on its site: its upcoming events, the Bar
+ * Channel, one menu or one picture, with a line at the top saying the show will resume.
+ */
+class AdBreakView(ctx: Context, images: BarImages, now: () -> Long) : FrameLayout(ctx) {
+    private var feed: BarFeed? = null
+    private val events = BarBreakView(ctx, images, now)
+    private val channel = BarChannelView(ctx, images, now)
+    private val picture = ImageView(ctx).apply { scaleType = ImageView.ScaleType.FIT_CENTER; setBackgroundColor(Color.BLACK) }
+    private val notice = ctx.label(size = 18f, color = Palette.ACCENT, bold = true).apply {
+        background = roundRect(Palette.PANEL, ctx.dpf(18f))
+        setPadding(ctx.dp(18), ctx.dp(8), ctx.dp(18), ctx.dp(8))
+    }
+    private val loadPicture = { url: String? -> images.load(picture, url) }
+
+    init {
+        visibility = GONE
+        addView(events, LayoutParams(MATCH, MATCH))
+        addView(channel, LayoutParams(MATCH, MATCH))
+        addView(picture, LayoutParams(MATCH, MATCH))
+        addView(notice, LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = ctx.dp(14) })
+    }
+
+    fun setFeed(next: BarFeed?) {
+        feed = next
+        events.setFeed(next)
+        channel.setFeed(next)
+        arrange()
+    }
+
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        if (isShown) arrange()
+    }
+
+    /** Shows whichever the bar chose. A menu or picture that's gone falls back to the events. */
+    private fun arrange() {
+        val a = feed?.adBreaks ?: AdBreaks()
+        val menuThere = a.menuId != null && feed?.menus?.any { it.id == a.menuId } == true
+        val show = when {
+            a.show == AdBreakShow.MENU && !menuThere -> AdBreakShow.EVENTS
+            a.show == AdBreakShow.PICTURE && a.image == null -> AdBreakShow.EVENTS
+            else -> a.show
+        }
+        channel.pinnedMenu = if (show == AdBreakShow.MENU) a.menuId else null
+        events.visibility = if (show == AdBreakShow.EVENTS) VISIBLE else GONE
+        channel.visibility = if (show == AdBreakShow.CHANNEL || show == AdBreakShow.MENU) VISIBLE else GONE
+        picture.visibility = if (show == AdBreakShow.PICTURE) VISIBLE else GONE
+        if (show == AdBreakShow.PICTURE) loadPicture(a.image)
+        val text = "Pluto ad break · show will resume" + if (a.mute) " · sound off" else ""
+        events.setNotice(text)
+        notice.text = text
+        // The events page has its own line at the top.
+        notice.visibility = if (show == AdBreakShow.EVENTS) GONE else VISIBLE
+    }
+
+    fun draw() {
+        events.draw()
+        channel.draw()
+    }
+}
+
 class BarBreakView(ctx: Context, private val images: BarImages, private val now: () -> Long) : LinearLayout(ctx) {
     private var feed: BarFeed? = null
     private val notice = ctx.label("Pluto ad break · show will resume · sound off", 18f, Palette.ACCENT, bold = true)
+
+    fun setNotice(text: String) {
+        notice.text = text
+    }
     private val logo = ImageView(ctx).apply { scaleType = ImageView.ScaleType.FIT_START }
     private val name = ctx.label(size = 30f, bold = true)
     private val heading = ctx.label(size = 22f, color = Palette.MUTED, bold = true)
@@ -621,7 +698,6 @@ class BarBreakView(ctx: Context, private val images: BarImages, private val now:
 
     init {
         orientation = VERTICAL
-        visibility = GONE
         setBackgroundColor(Palette.BG)
         val pad = ctx.dp(if (Look.crt) 16 else 48)
         setPadding(pad, ctx.dp(28), pad, ctx.dp(20))
