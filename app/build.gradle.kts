@@ -12,7 +12,7 @@ val keystoreProps = rootProject.file("keystore.properties").takeIf { it.exists()
 }
 
 // The release tag on GitHub must match this, with a leading "v", for the in-app update check.
-val appVersion = providers.gradleProperty("appVersion").getOrElse("1.4.3")
+val appVersion = providers.gradleProperty("appVersion").getOrElse("1.4.4")
 val updateApi = providers.gradleProperty("updateApi")
     .getOrElse("https://api.github.com/repos/zapiltar/OpenGuide/releases/latest")
 // Bar Mode's server (server/ in this repo). -PbarApi= (empty) hides Bar Mode. To test against `npm run dev`,

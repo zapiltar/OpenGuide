@@ -49,7 +49,9 @@ events on them:
 - **The bar's own channel** sits at the top of the guide, cycling through what's on now, menus, upcoming
   events and event posters.
 - **Framed screens** shrink the channel to the top right, with the bar's events down the left and its current
-  special along the bottom.
+  special along the bottom, all the time or only while a special is on. The weather shows beside the clock:
+  forecasts from [MET Norway](https://api.met.no/) (CC BY 4.0), for the bar's ZIP code (looked up with
+  [Zippopotam.us](https://zippopotam.us/)) or wherever the TV's internet connection places it.
 - **The bar's name, logo and colors** replace OpenGuide's.
 - **Pluto TV ad breaks** show the bar's events, with the sound off, until the show returns.
 

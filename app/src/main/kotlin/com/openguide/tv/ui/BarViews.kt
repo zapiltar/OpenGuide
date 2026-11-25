@@ -18,6 +18,8 @@ import com.openguide.tv.data.BarFeed
 import com.openguide.tv.data.BarMenu
 import com.openguide.tv.data.Occurrence
 import com.openguide.tv.data.Special
+import com.openguide.tv.data.Weather
+import com.openguide.tv.data.weatherText
 import com.openguide.tv.data.specialsComingUp
 import com.openguide.tv.data.upcomingEvents
 import okhttp3.OkHttpClient
@@ -471,6 +473,7 @@ class BarFrameView(ctx: Context, private val images: BarImages, private val now:
     private val logo = ImageView(ctx).apply { scaleType = ImageView.ScaleType.FIT_START }
     private val name = ctx.label(size = 15f, color = Palette.ACCENT, bold = true, lines = 2)
     private val clock = ctx.label(size = 22f, bold = true)
+    private val weatherLabel = ctx.label(size = 20f, bold = true).apply { visibility = GONE }
     private val comingTitle = ctx.label("Coming up", 12f, Palette.MUTED, bold = true)
     private val coming = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
 
@@ -498,7 +501,10 @@ class BarFrameView(ctx: Context, private val images: BarImages, private val now:
         setBackgroundColor(Palette.BG)
         left.addView(logo, LinearLayout.LayoutParams(MATCH, ctx.dp(72)).apply { bottomMargin = ctx.dp(8) })
         left.addView(name, LinearLayout.LayoutParams(MATCH, WRAP))
-        left.addView(clock, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(4) })
+        val clockRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        clockRow.addView(clock, LinearLayout.LayoutParams(WRAP, WRAP))
+        clockRow.addView(weatherLabel, LinearLayout.LayoutParams(WRAP, WRAP).apply { leftMargin = ctx.dp(12) })
+        left.addView(clockRow, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(4) })
         left.addView(comingTitle, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = ctx.dp(14); bottomMargin = ctx.dp(2) })
         left.addView(coming, LinearLayout.LayoutParams(MATCH, WRAP))
         addView(left)
@@ -527,6 +533,12 @@ class BarFrameView(ctx: Context, private val images: BarImages, private val now:
     fun setFeed(next: BarFeed?) {
         feed = next
         draw()
+    }
+
+    /** The temperature and an icon beside the clock, or nothing when the weather isn't known. */
+    fun setWeather(w: Weather?) {
+        weatherLabel.text = w?.let(::weatherText)
+        weatherLabel.visibility = if (w == null) GONE else VISIBLE
     }
 
     override fun onVisibilityChanged(changedView: View, visibility: Int) {

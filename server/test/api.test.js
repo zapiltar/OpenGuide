@@ -7,8 +7,9 @@ const OWNER = "owner@example.com";
 const LOCAL = "http://localhost";
 
 /** Calls the Worker as [as] (an admin email), as if signed in through the local dev bypass. */
-async function call(method, path, { body, as = OWNER, headers = {}, base = LOCAL, raw } = {}) {
+async function call(method, path, { body, as = OWNER, headers = {}, base = LOCAL, raw, cf } = {}) {
   const init = { method, headers: { ...headers } };
+  if (cf) init.cf = cf;
   if (raw !== undefined) init.body = raw;
   else if (body !== undefined) {
     init.body = JSON.stringify(body);
@@ -449,5 +450,72 @@ describe("who can do what", () => {
     const url = `/api/admin/venues/${venue.id}/images`;
     expect((await call("POST", url, { raw: "<svg/>", headers: { "Content-Type": "image/svg+xml" } })).status).toBe(415);
     expect((await call("POST", url, { raw: new Uint8Array(5 * 1024 * 1024 + 1), headers: { "Content-Type": "image/png" } })).status).toBe(413);
+  });
+});
+
+describe("weather", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const hour = (offset, temp, symbol) => ({
+    time: new Date(Math.floor(Date.now() / 3_600_000) * 3_600_000 + offset * 3_600_000).toISOString(),
+    data: { instant: { details: { air_temperature: temp } }, next_1_hours: { summary: { symbol_code: symbol } } },
+  });
+
+  /** Stands in for Zippopotam.us and MET Norway, counting forecast requests. */
+  function fakeServices() {
+    const calls = { forecast: 0, lastForecast: null };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.startsWith("https://api.zippopotam.us/us/10001")) {
+        return Response.json({ places: [{ "place name": "New York City", "state abbreviation": "NY", latitude: "40.7484", longitude: "-73.9967" }] });
+      }
+      if (url.startsWith("https://api.zippopotam.us/")) return new Response("{}", { status: 404 });
+      if (url.startsWith("https://api.met.no/")) {
+        calls.forecast++;
+        calls.lastForecast = url;
+        expect(new Headers(init?.headers).get("User-Agent")).toMatch(/^OpenGuide-Bar/);
+        return Response.json({ properties: { timeseries: [hour(0, 20, "partlycloudy_night"), hour(1, 25, "rain")] } });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+    return calls;
+  }
+
+  const weather = (token, cf) => call("GET", "/api/tv/weather", { headers: { Authorization: `Bearer ${token}` }, cf });
+
+  it("uses the bar's ZIP code, in Fahrenheit, and shares one forecast between requests", async () => {
+    const calls = fakeServices();
+    const venue = await newVenue();
+    const { token } = await linkTv(venue.id);
+    const set = await call("PATCH", `/api/admin/venues/${venue.id}`, { body: { weatherZip: "10001" } });
+    expect(set.body).toMatchObject({ weatherZip: "10001", weatherPlace: "New York City, NY" });
+    const r = await weather(token);
+    expect(r.body.weather).toEqual({ temp: 68, unit: "F", kind: "partly", day: false, place: "New York City, NY", source: "zip" });
+    expect(calls.lastForecast).toContain("lat=40.75&lon=-74.00");
+    await weather(token);
+    expect(calls.forecast).toBe(1);
+  });
+
+  it("falls back to where the TV's address is, in Celsius outside the US", async () => {
+    fakeServices();
+    const venue = await newVenue();
+    const { token } = await linkTv(venue.id);
+    const r = await weather(token, { latitude: "51.5", longitude: "-0.12", city: "London", country: "GB" });
+    expect(r.body.weather).toMatchObject({ temp: 20, unit: "C", place: "London", source: "ip" });
+    expect((await weather(token)).body.weather).toBe(null);
+  });
+
+  it("refuses ZIP codes that don't exist or aren't ZIP codes, and can clear one", async () => {
+    fakeServices();
+    const venue = await newVenue();
+    expect((await call("PATCH", `/api/admin/venues/${venue.id}`, { body: { weatherZip: "99999" } })).status).toBe(400);
+    expect((await call("PATCH", `/api/admin/venues/${venue.id}`, { body: { weatherZip: "SW1A" } })).status).toBe(400);
+    await call("PATCH", `/api/admin/venues/${venue.id}`, { body: { weatherZip: "10001" } });
+    const cleared = await call("PATCH", `/api/admin/venues/${venue.id}`, { body: { weatherZip: "" } });
+    expect(cleared.body).toMatchObject({ weatherZip: null, weatherPlace: null });
+  });
+
+  it("needs a linked TV", async () => {
+    expect((await call("GET", "/api/tv/weather", { headers: { Authorization: "Bearer nope" } })).status).toBe(401);
   });
 });

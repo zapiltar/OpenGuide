@@ -170,4 +170,14 @@ class BarLogicTest {
         // A layout this app doesn't know yet shows the full picture.
         assertEquals(BarLayout.FULL, parseBarFeed(json.replace("\"layout\":\"specials\"", "\"layout\":\"later\"")).layout)
     }
+
+    @Test fun readsWeather() {
+        val w = parseWeather("""{"weather":{"temp":68,"unit":"F","kind":"clear","day":false,"place":"NYC","source":"zip"}}""")!!
+        assertEquals(Weather(68, "F", "clear", false), w)
+        assertEquals("🌙 68°", weatherText(w))
+        assertEquals("☀️", weatherIcon(w.copy(day = true)))
+        assertNull(parseWeather("""{"weather":null}"""))
+        // A kind this app doesn't know yet gets a cloud.
+        assertEquals("☁️", weatherIcon(w.copy(kind = "something new")))
+    }
 }

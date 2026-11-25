@@ -88,6 +88,31 @@ fun framedAt(feed: BarFeed, now: Long): Boolean = when (feed.layout) {
     BarLayout.DURING_SPECIALS -> feed.specials.any { s -> s.occurrences.any { now >= it.start && now < it.end } }
 }
 
+/** The weather where the bar is, for framed screens. [kind] is clear, partly, cloudy, fog, rain, sleet, snow or storm. */
+data class Weather(val temp: Int, val unit: String, val kind: String, val day: Boolean)
+
+/** Reads GET /api/tv/weather. Null when the server couldn't tell, or sent something unexpected. */
+fun parseWeather(json: String): Weather? {
+    val w = JSONObject(json).optJSONObject("weather") ?: return null
+    if (!w.has("temp")) return null
+    return Weather(w.getInt("temp"), w.optString("unit", "F"), w.optString("kind", "cloudy"), w.optBoolean("day", true))
+}
+
+/** An icon for the sky, as an emoji so it needs no pictures of its own. */
+fun weatherIcon(w: Weather): String = when (w.kind) {
+    "clear" -> if (w.day) "\u2600\uFE0F" else "\uD83C\uDF19"
+    "partly" -> if (w.day) "\u26C5" else "\u2601\uFE0F"
+    "fog" -> "\uD83C\uDF2B\uFE0F"
+    "rain" -> "\uD83C\uDF27\uFE0F"
+    "sleet" -> "\uD83C\uDF28\uFE0F"
+    "snow" -> "\u2744\uFE0F"
+    "storm" -> "\u26C8\uFE0F"
+    else -> "\u2601\uFE0F"
+}
+
+/** "72°", the way it sits beside the clock. */
+fun weatherText(w: Weather): String = "${weatherIcon(w)} ${w.temp}\u00B0"
+
 const val BAR_CHANNEL_ID = "openguide.bar-channel"
 
 /** The linked bar's own channel: its menus, events and specials, one after another. Named after the bar. */

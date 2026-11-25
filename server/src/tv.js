@@ -86,7 +86,7 @@ export async function pairingStatus(request, env) {
   });
 }
 
-async function screenFromToken(request, env) {
+export async function screenFromToken(request, env) {
   const auth = request.headers.get("Authorization") || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
   if (!token) throw new HttpError(401, "Missing screen token");

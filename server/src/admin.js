@@ -2,6 +2,7 @@ import { INVITE_DAYS, RESET_DAYS, changePassword, makeLink } from "./accounts.js
 import { checkSameOrigin, identify, requireManager, requireOwner, requireVenue } from "./auth.js";
 import { HttpError, imageUrl, json, menuSectionsOut, readJson } from "./http.js";
 import { cleanUpPairings, normalizeCode } from "./tv.js";
+import { lookupZip } from "./weather.js";
 import * as v from "./validate.js";
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -22,6 +23,8 @@ function venueOut(row, origin) {
     // What the signed-in person is at this bar: "owner", "manager" or "staff".
     role: row.role,
     channel: v.channelOf(row.channel),
+    weatherZip: row.weather_zip ?? null,
+    weatherPlace: row.weather_place ?? null,
     feedVersion: row.feed_version,
     createdAt: row.created_at,
   };
@@ -206,14 +209,25 @@ export async function handleAdmin(request, env, path) {
         const { results } = await db.prepare("SELECT id FROM menus WHERE venue_id = ?").bind(venueId).all();
         next.channel = JSON.stringify(v.channel(body.channel, v.channelOf(venue.channel), results.map((r) => r.id)));
       }
+      if ("weatherZip" in body) {
+        const zip = v.text(body.weatherZip, "weatherZip", { max: 10 });
+        if (!zip) {
+          Object.assign(next, { weather_zip: null, weather_lat: null, weather_lon: null, weather_place: null });
+        } else if (zip !== venue.weather_zip) {
+          const found = await lookupZip(zip);
+          Object.assign(next, { weather_zip: found.zip, weather_lat: found.lat, weather_lon: found.lon, weather_place: found.place });
+        }
+      }
       if ("theme" in body) {
         const t = v.theme(body.theme);
         next.theme_primary = t?.primary ?? null;
         next.theme_secondary = t?.secondary ?? null;
       }
       await db.batch([
-        db.prepare("UPDATE venues SET name = ?, display_name = ?, logo_key = ?, timezone = ?, theme_primary = ?, theme_secondary = ?, channel = ? WHERE id = ?")
-          .bind(next.name, next.display_name, next.logo_key, next.timezone, next.theme_primary, next.theme_secondary, next.channel ?? null, venueId),
+        db.prepare(`UPDATE venues SET name = ?, display_name = ?, logo_key = ?, timezone = ?, theme_primary = ?, theme_secondary = ?, channel = ?,
+            weather_zip = ?, weather_lat = ?, weather_lon = ?, weather_place = ? WHERE id = ?`)
+          .bind(next.name, next.display_name, next.logo_key, next.timezone, next.theme_primary, next.theme_secondary, next.channel ?? null,
+            next.weather_zip ?? null, next.weather_lat ?? null, next.weather_lon ?? null, next.weather_place ?? null, venueId),
         bump(db, venueId),
       ]);
       return json(venueOut({ ...next, feed_version: venue.feed_version + 1 }, origin));

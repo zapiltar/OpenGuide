@@ -2,6 +2,7 @@ import { handleAuth } from "./accounts.js";
 import { handleAdmin } from "./admin.js";
 import { HttpError, json } from "./http.js";
 import { feed, pairingStatus, setLayout, startPairing, unlink } from "./tv.js";
+import { tvWeather } from "./weather.js";
 
 // Uploaded image keys look like "<bar id>/<uuid>.<ext>".
 const IMAGE_KEY = /^[0-9a-f-]{36}\/[0-9a-f-]{36}\.(png|jpg|webp|gif)$/;
@@ -22,6 +23,7 @@ async function route(request, env, ctx) {
   if (path === "/api/tv/feed" && method === "GET") return feed(request, env, ctx);
   if (path === "/api/tv/unlink" && method === "POST") return unlink(request, env);
   if (path === "/api/tv/layout" && method === "POST") return setLayout(request, env);
+  if (path === "/api/tv/weather" && method === "GET") return tvWeather(request, env);
   if (path.startsWith("/img/") && method === "GET") return image(path.slice(5), env);
   if (path.startsWith("/api/")) throw new HttpError(404, "Not found");
   return env.ASSETS ? env.ASSETS.fetch(request) : new Response("Not found", { status: 404 });

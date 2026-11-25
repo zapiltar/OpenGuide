@@ -1011,6 +1011,7 @@ function settingsPage(ctx) {
   const display = h("input", { type: "text", maxlength: 60, value: v.displayName || "", placeholder: v.name });
   const logo = imageField(v.id, v.logo, v.logoUrl, { label: "Logo", hint: "Shown on the TVs in place of OpenGuide's. A square PNG with a clear background works best." });
   const tz = timeZoneSelect(v.timezone);
+  const zip = h("input", { type: "text", inputmode: "numeric", pattern: "\\d{5}", maxlength: 5, value: v.weatherZip || "", placeholder: "Like 10001", style: "max-width:10em" });
   const colors = colorPicker(v.theme, () => display.value || v.displayName || v.name);
   const save = h("button", { class: "primary" }, "Save");
   const form = h("form", { class: "card" },
@@ -1019,12 +1020,15 @@ function settingsPage(ctx) {
     logo.el,
     colors.el,
     field("Time zone", tz, "Specials and events run on this clock."),
+    field("ZIP code for the weather", zip, v.weatherPlace
+      ? `Framed screens show the weather for ${v.weatherPlace}. Leave empty to use where each TV's internet connection says it is.`
+      : "Framed screens show the temperature next to the clock. Without a US ZIP code, it's for where each TV's internet connection says it is. Weather from MET Norway."),
     h("div", null, save));
   display.addEventListener("input", colors.redraw);
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
     busy(save, async () => {
-      const body = { displayName: display.value, logo: logo.value(), timezone: tz.value, theme: colors.value() };
+      const body = { displayName: display.value, logo: logo.value(), timezone: tz.value, theme: colors.value(), weatherZip: zip.value.trim() };
       if (name) body.name = name.value;
       await api("PATCH", `/venues/${v.id}`, body);
       toast("Saved. TVs pick it up within 2 minutes.");

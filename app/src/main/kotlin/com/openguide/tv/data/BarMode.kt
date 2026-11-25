@@ -52,6 +52,11 @@ class BarMode(ctx: Context, private val http: OkHttpClient, private val prefs: P
     /** The linked bar's feed, or null when this TV isn't linked or hasn't got one yet. */
     val feed: StateFlow<BarFeed?> = _feed
 
+    private val _weather = MutableStateFlow<Weather?>(null)
+    /** The weather at the bar, fetched only while the screen can be framed, since that's the only place it shows. */
+    val weather: StateFlow<Weather?> = _weather
+    private var weatherAt = 0L
+
     /** How far this TV's clock is behind the server's, so specials start on time even if the TV's clock is off. */
     @Volatile var clockOffset = 0L
         private set
@@ -88,6 +93,7 @@ class BarMode(ctx: Context, private val http: OkHttpClient, private val prefs: P
         poller = scope.launch {
             while (isActive && linked) {
                 refresh()
+                refreshWeather()
                 delay(POLL_MS)
             }
         }
@@ -95,7 +101,10 @@ class BarMode(ctx: Context, private val http: OkHttpClient, private val prefs: P
 
     /** Checks for changes now, without waiting for the next scheduled check. */
     fun refreshNow() {
-        scope.launch { refresh() }
+        scope.launch {
+            refresh()
+            refreshWeather()
+        }
     }
 
     private suspend fun refresh() = lock.withLock {
@@ -146,6 +155,7 @@ class BarMode(ctx: Context, private val http: OkHttpClient, private val prefs: P
             if (!res.isSuccessful) throw IOException("The bar server returned HTTP ${res.code}")
         }
         refresh()
+        refreshWeather()
     }
 
     // ---- Linking ----
@@ -198,6 +208,27 @@ class BarMode(ctx: Context, private val http: OkHttpClient, private val prefs: P
         }
     }
 
+    private fun refreshWeather() {
+        val token = prefs.barToken ?: return
+        if (_feed.value?.layout?.let { it != BarLayout.FULL } != true) return
+        if (_weather.value != null && System.currentTimeMillis() - weatherAt < WEATHER_MS) return
+        val req = Request.Builder().url("$base/api/tv/weather").header("Authorization", "Bearer $token").build()
+        try {
+            http.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) {
+                    Log.w(TAG, "Weather returned HTTP ${res.code}")
+                    return
+                }
+                _weather.value = parseWeather(res.body!!.string())
+                weatherAt = System.currentTimeMillis()
+            }
+        } catch (e: IOException) {
+            Log.w(TAG, "Couldn't get the weather", e)
+        } catch (e: JSONException) {
+            Log.w(TAG, "Weather wasn't understood", e)
+        }
+    }
+
     private fun forget() {
         poller?.cancel()
         poller = null
@@ -207,12 +238,14 @@ class BarMode(ctx: Context, private val http: OkHttpClient, private val prefs: P
         etag = null
         cacheFile.delete()
         _feed.value = null
+        _weather.value = null
     }
 
     private companion object {
         const val TAG = "BarMode"
         const val ETAG_KEY = "bar_feed"
         const val POLL_MS = 2 * 60_000L
+        const val WEATHER_MS = 20 * 60_000L
         val JSON = "application/json; charset=utf-8".toMediaType()
     }
 }

@@ -618,6 +618,7 @@ class MainActivity : Activity() {
         scope.launch { repo.epgVersion.collect { onListingsChanged() } }
         bar.start()
         scope.launch { bar.feed.collect(::onBarFeed) }
+        scope.launch { bar.weather.collect { barFrame.setWeather(it) } }
         scope.launch {
             // Specials are timed to the second, so they're checked more often than the clock.
             while (true) {
