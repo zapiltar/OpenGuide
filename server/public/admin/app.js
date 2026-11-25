@@ -1238,9 +1238,14 @@ function loginPage() {
     });
   });
   setTimeout(() => email.focus(), 0);
+  // Only a brand-new site needs this. Afterwards the owner reaches #/setup directly, to reset a forgotten
+  // password with the setup code.
+  const firstTime = h("p", { class: "muted small", hidden: true }, "Setting up this site for the first time? ",
+    h("a", { href: "#/setup" }, "Create the owner account"));
+  auth("GET", "/setup").then((s) => { firstTime.hidden = !s.needed; }, () => {});
   return authCard("Sign in", "Manage your bar's specials, menus, events and TVs.", form,
     h("p", { class: "muted small" }, "Forgot your password? Ask your bar's manager or the site owner for a reset link."),
-    h("p", { class: "muted small" }, "Setting up this site for the first time? ", h("a", { href: "#/setup" }, "Create the owner account")));
+    firstTime);
 }
 
 async function setupPage() {
